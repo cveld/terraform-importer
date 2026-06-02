@@ -20,3 +20,10 @@ jobs:
         id: release
         with:
           release-type: python
+
+  publish:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created }}
+    uses: ./.github/workflows/publish.yml
+    permissions:
+      id-token: write
