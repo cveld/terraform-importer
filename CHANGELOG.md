@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.2](https://github.com/cveld/terraform-importer/compare/v0.1.1...v0.1.2) (2026-06-02)
+
+
+### Bug Fixes
+
+* add PyPI long description and repository URL ([95e0f46](https://github.com/cveld/terraform-importer/commit/95e0f463a3b3e3510e101f66128776b5c1577d5d))
+* add workflow_call trigger to publish workflow ([c84f2d2](https://github.com/cveld/terraform-importer/commit/c84f2d2bf4f9c26f01dce6a93e15841d14157179))
+
 ## [0.1.1](https://github.com/cveld/terraform-importer/compare/v0.1.0...v0.1.1) (2026-06-02)
 
 
