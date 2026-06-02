@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/cveld/terraform-importer/compare/v0.1.3...v0.2.0) (2026-06-02)
+
+
+### Features
+
+* interactive import flow with live Azure CLI resolution ([f811ce5](https://github.com/cveld/terraform-importer/commit/f811ce597433bcb085ce84ef8ce513df23257303))
+
 ## [0.1.3](https://github.com/cveld/terraform-importer/compare/v0.1.2...v0.1.3) (2026-06-02)
 
 
