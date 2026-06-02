@@ -178,11 +178,18 @@ _ID_FORMULAS: dict[str, Any] = {
         lambda a, _: _str(a, "object_id"),
     "azuread_application_federated_identity_credential":
         lambda a, _: f"{_str(a,'application_id')}/federatedIdentityCredentials/{_str(a,'credential_id')}",
+    "azuread_app_role_assignment":
+        lambda a, _: f"/servicePrincipals/{_str(a,'resource_object_id')}/appRoleAssignments/{_str(a,'id')}",
 }
 # fmt: on
 
+# Resource types for which the Terraform provider does not support importing.
+IMPORT_UNSUPPORTED: frozenset[str] = frozenset({
+    "azuread_application_password",
+})
 
-def _resource_type(address: str) -> str:
+
+def resource_type(address: str) -> str:
     addr = re.sub(r"\[.*?\]$", "", address)
     parts = addr.split(".")
     i = 0
@@ -193,7 +200,7 @@ def _resource_type(address: str) -> str:
 
 def build_id(rc: ResourceChange, sub_id: str) -> tuple[str, bool]:
     """Return (id_string, is_derived). is_derived=False means type is unknown."""
-    rtype   = _resource_type(rc.address)
+    rtype = resource_type(rc.address)
     formula = _ID_FORMULAS.get(rtype)
     if formula:
         try:

@@ -7,10 +7,21 @@ A `.plan` file is a ZIP archive:
 | entry | contents |
 |---|---|
 | `tfplan` | protobuf binary — the plan itself, with evaluated attribute values |
-| `tfconfig/` | raw HCL config as JSON (unresolved expressions, e.g. `${var.name}`) |
+| `tfconfig/` | raw HCL source files (one directory per module, e.g. `tfconfig/m-infrastructure/main.tf`) |
+| `tfconfig/modules.json` | module registry: maps module keys to source/dir |
 | `tfstate` | prior state JSON |
+| `tfstate-prev` | previous state JSON |
 
-**Use `tfplan` for attribute values. `tfconfig` contains source expressions, not computed values.**
+**Use `tfplan` for attribute values. `tfconfig/` contains the original HCL expressions (not resolved values).**
+
+### tfconfig HCL
+
+The `tfconfig/` files are raw HCL (not JSON). They are parsed with `python-hcl2` to extract attribute expressions for display purposes — specifically to show the reference chain when a plan attribute is `UNKNOWN` (computed).
+
+Module directory naming: `m-` prefix + module name, e.g. `module.infrastructure` → `tfconfig/m-infrastructure/`.  
+Root module → `tfconfig/m-/`.
+
+`python-hcl2` wraps resource type and name keys in quotes: `'"azuread_application"'`. Template expressions are preserved as `${...}` strings.
 
 ## Protobuf field map
 
