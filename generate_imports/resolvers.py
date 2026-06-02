@@ -97,7 +97,27 @@ def _resolver_azuread_application_federated_identity_credential(a: dict) -> Reso
     return (desc, execute), []
 
 
+def _resolver_azurerm_role_assignment(a: dict) -> ResolverResult:
+    v, missing = _require(a, "scope", "principal_id", "role_definition_id")
+    if missing:
+        return None, missing
+    desc = (
+        f"az role assignment list --scope {v['scope']!r} --assignee {v['principal_id']!r} "
+        f"--query \"[?roleDefinitionId=='{v['role_definition_id']}'].id | [0]\" -o tsv"
+    )
+    def execute() -> tuple[str, str]:
+        return _az(
+            "role", "assignment", "list",
+            "--scope", v["scope"],
+            "--assignee", v["principal_id"],
+            "--query", f"[?roleDefinitionId=='{v['role_definition_id']}'].id | [0]",
+            "-o", "tsv",
+        )
+    return (desc, execute), []
+
+
 _RESOLVERS: dict[str, Callable[[dict], Resolver | None]] = {
+    "azurerm_role_assignment":                            _resolver_azurerm_role_assignment,
     "azuread_service_principal":                          _resolver_azuread_service_principal,
     "azuread_application":                                _resolver_azuread_application,
     "azuread_app_role_assignment":                        _resolver_azuread_app_role_assignment,

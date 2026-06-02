@@ -18,6 +18,7 @@ The CLI calls `get_resolver(rtype, attrs)` before prompting. If a resolver exist
 
 | resource type | az command |
 |---|---|
+| `azurerm_role_assignment` | `az role assignment list --scope {scope} --assignee {principal_id}` filtered by `roleDefinitionId` |
 | `azuread_service_principal` | `az ad sp show --id {client_id}` |
 | `azuread_application` | `az ad app list --display-name {display_name}` |
 | `azuread_app_role_assignment` | `az rest GET /servicePrincipals/{resource_object_id}/appRoleAssignedTo` filtered by `principalId` and `appRoleId` |
