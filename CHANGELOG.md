@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/cveld/terraform-importer/compare/v0.1.2...v0.1.3) (2026-06-02)
+
+
+### Bug Fixes
+
+* align script name with PyPI package name ([31ef749](https://github.com/cveld/terraform-importer/commit/31ef749785199b9b287df3dd9a3d9c66bb08d20b))
+
 ## [0.1.2](https://github.com/cveld/terraform-importer/compare/v0.1.1...v0.1.2) (2026-06-02)
 
 
