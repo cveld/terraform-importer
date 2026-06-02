@@ -2,8 +2,12 @@
 name = "generate-imports-from-plan"
 version = "0.1.1"
 description = "Generate Terraform import blocks directly from a binary .plan file"
+readme = "README.md"
 requires-python = ">=3.11"
 dependencies = ["msgpack>=1.0"]
+
+[project.urls]
+Repository = "https://github.com/cveld/terraform-importer"
 
 [project.scripts]
 generate-imports = "generate_imports:main"
