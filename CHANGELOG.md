@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/cveld/terraform-importer/compare/v0.2.0...v0.2.1) (2026-06-02)
+
+
+### Bug Fixes
+
+* add missing live resolver for azurerm_role_assignment ([9833904](https://github.com/cveld/terraform-importer/commit/98339043d6d8f5b9d601142dcf4b0a764fe9cf79))
+
 ## [0.2.0](https://github.com/cveld/terraform-importer/compare/v0.1.3...v0.2.0) (2026-06-02)
 
 
