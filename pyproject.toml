@@ -10,7 +10,7 @@ dependencies = ["msgpack>=1.0"]
 Repository = "https://github.com/cveld/terraform-importer"
 
 [project.scripts]
-generate-imports = "generate_imports:main"
+generate-imports-from-plan = "generate_imports:main"
 
 [build-system]
 requires = ["hatchling"]

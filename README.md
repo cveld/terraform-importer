@@ -16,7 +16,7 @@ Or install permanently:
 
 ```sh
 uv tool install generate-imports-from-plan
-generate-imports terraform.plan
+generate-imports-from-plan terraform.plan
 ```
 
 ## Workflow
@@ -26,7 +26,7 @@ generate-imports terraform.plan
 terraform plan -out terraform.plan
 
 # 2. Generate import blocks and write to file
-generate-imports terraform.plan > imports.tf
+generate-imports-from-plan terraform.plan > imports.tf
 
 # 3. Fill in any remaining # TODO ids, then re-plan and apply
 terraform plan -out terraform.plan
