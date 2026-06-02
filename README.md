@@ -4,7 +4,7 @@ Generates Terraform `import {}` blocks directly from a binary `.plan` file — n
 
 ## Why?
 
-`terraform show -json` needs provider plugins locally. This tool reads the plan ZIP directly, making it usable in CI pipelines and on machines that haven't run `terraform init`.
+`terraform show -json` does not expose all planned attribute values — computed fields like resource names and resource group names are missing from the JSON output. This tool reads the raw msgpack-encoded attributes directly from the binary plan, giving access to all values needed to construct Azure resource IDs.
 
 ## Installation
 
