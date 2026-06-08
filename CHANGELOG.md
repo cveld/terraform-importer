@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/cveld/terraform-importer/compare/v0.2.1...v0.3.0) (2026-06-08)
+
+
+### Features
+
+* cross-plan ID resolution and per-resource subscription resolution ([c8b7114](https://github.com/cveld/terraform-importer/commit/c8b71144a1cbcdf8e0a7b084178e570a76207a7d))
+
 ## [0.2.1](https://github.com/cveld/terraform-importer/compare/v0.2.0...v0.2.1) (2026-06-02)
 
 
