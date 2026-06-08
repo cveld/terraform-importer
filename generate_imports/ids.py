@@ -131,6 +131,22 @@ _ID_FORMULAS: dict[str, Any] = {
         lambda a, s: _arm(s, _str(a,"resource_group_name"), "Microsoft.Network/azureFirewalls", _str(a,"name")),
     "azurerm_firewall_policy":
         lambda a, s: _arm(s, _str(a,"resource_group_name"), "Microsoft.Network/firewallPolicies", _str(a,"name")),
+    "azurerm_route_table":
+        lambda a, s: _arm(s, _str(a,"resource_group_name"), "Microsoft.Network/routeTables", _str(a,"name")),
+    "azurerm_route":
+        lambda a, s: _arm(s, _str(a,"resource_group_name"), "Microsoft.Network/routeTables", _str(a,"route_table_name"), "routes", _str(a,"name")),
+    "azurerm_network_security_rule":
+        lambda a, s: _arm(s, _str(a,"resource_group_name"), "Microsoft.Network/networkSecurityGroups", _str(a,"network_security_group_name"), "securityRules", _str(a,"name")),
+    "azurerm_subnet_route_table_association":
+        lambda a, _: _str(a, "subnet_id"),
+    "azurerm_subnet_network_security_group_association":
+        lambda a, _: _str(a, "subnet_id"),
+    "azurerm_virtual_network_dns_servers":
+        lambda a, _: f"{_str(a,'virtual_network_id')}/dnsServers/default",
+    "azurerm_virtual_hub_connection":
+        lambda a, _: f"{_str(a,'virtual_hub_id')}/hubVirtualNetworkConnections/{_str(a,'name')}",
+    "azurerm_private_dns_zone_virtual_network_link":
+        lambda a, s: _arm(s, _str(a,"resource_group_name"), "Microsoft.Network/privateDnsZones", _str(a,"private_dns_zone_name"), "virtualNetworkLinks", _str(a,"name")),
 
     # Container
     "azurerm_container_registry":
@@ -190,7 +206,7 @@ IMPORT_UNSUPPORTED: frozenset[str] = frozenset({
 
 
 def resource_type(address: str) -> str:
-    addr = re.sub(r"\[.*?\]$", "", address)
+    addr = re.sub(r"\[[^\]]*\]$", "", address)
     parts = addr.split(".")
     i = 0
     while i + 1 < len(parts) and parts[i] == "module":

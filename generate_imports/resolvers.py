@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import subprocess
 from typing import Callable
 
@@ -116,6 +117,266 @@ def _resolver_azurerm_role_assignment(a: dict) -> ResolverResult:
     return (desc, execute), []
 
 
+# ---------------------------------------------------------------------------
+# Cross-plan resolution helpers
+# ---------------------------------------------------------------------------
+
+def _module_prefix(address: str) -> str:
+    """Return the module path portion of a resource address (strips resource type+name)."""
+    addr = re.sub(r"\[[^\]]*\]$", "", address)
+    parts = addr.split(".")
+    i = 0
+    while i + 1 < len(parts) and parts[i] == "module":
+        i += 2
+    return ".".join(parts[:i])
+
+
+def _rtype_from_addr(address: str) -> str:
+    addr = re.sub(r"\[[^\]]*\]$", "", address)
+    parts = addr.split(".")
+    i = 0
+    while i + 1 < len(parts) and parts[i] == "module":
+        i += 2
+    return parts[i] if i < len(parts) else address
+
+
+def _resource_name(address: str) -> str:
+    """Return the resource instance label (after the type, without for_each key)."""
+    addr = re.sub(r"\[[^\]]*\]$", "", address)
+    parts = addr.split(".")
+    i = 0
+    while i + 1 < len(parts) and parts[i] == "module":
+        i += 2
+    return parts[i + 1] if i + 1 < len(parts) else ""
+
+
+def _for_each_key(address: str) -> str | None:
+    m = re.search(r'\["([^"]+)"\]$', address)
+    if m:
+        return m.group(1)
+    m = re.search(r'\[(\d+)\]$', address)
+    return m.group(1) if m else None
+
+
+def _ref_names_for_type(expr: str, rtype: str) -> list[str]:
+    """Find resource instance names referenced in `expr` for a given resource type.
+
+    Matches `rtype.NAME` as a top-level resource reference, excluding `data.rtype.NAME`
+    and `module.x.rtype` forms (the negative lookbehind rejects a preceding `.` or word
+    char). Robust against complex expressions (conditionals, try(), interpolation).
+
+    e.g. expr='var.use_existing ? data.azurerm_virtual_network.ex.id : azurerm_virtual_network.vnet[each.key].id'
+         rtype='azurerm_virtual_network' → ['vnet']
+    """
+    pat = re.compile(r"(?<![\w.])" + re.escape(rtype) + r"\.([A-Za-z_][A-Za-z0-9_]*)")
+    seen: list[str] = []
+    for m in pat.finditer(expr):
+        if m.group(1) not in seen:
+            seen.append(m.group(1))
+    return seen
+
+
+def _find_sibling(changes: list, address: str, rtype: str):
+    """Find sibling resource of given type in the same module context.
+
+    Falls back to for_each-key matching when multiple siblings exist.
+    Returns (change_or_None, error_list).
+    """
+    prefix = _module_prefix(address)
+    siblings = [c for c in changes
+                if _rtype_from_addr(c.address) == rtype
+                and _module_prefix(c.address) == prefix]
+    if not siblings:
+        return None, [f"no {rtype} found in same module"]
+    if len(siblings) == 1:
+        return siblings[0], []
+    own_key = _for_each_key(address)
+    if own_key:
+        key_match = [s for s in siblings if _for_each_key(s.address) == own_key]
+        if len(key_match) == 1:
+            return key_match[0], []
+    return None, [f"multiple {rtype} in module — cannot determine which one"]
+
+
+def _find_referenced_resource(
+    changes: list,
+    address: str,
+    plan_file: str,
+    own_rtype: str,
+    attr: str,
+    fallback_rtype: str,
+):
+    """Find the plan resource that `attr` references, using the HCL config.
+
+    Strategy:
+    1. Read the HCL expression for `attr` from the plan's tfconfig.
+    2. Find references to `fallback_rtype` (the expected sibling type) in the expression
+       and extract the resource instance name(s).
+    3. Match a change by module-prefix + type + name; disambiguate for_each by key.
+    4. Fall back to type-only module-prefix matching when HCL is unavailable or no
+       reference to the expected type is found in the expression.
+
+    Returns (change_or_None, error_list).
+    """
+    if plan_file:
+        from .config import get_attr_expr
+        result = get_attr_expr(plan_file, address, own_rtype, _resource_name(address), attr)
+        if result:
+            expr, _ = result
+            ref_names = _ref_names_for_type(expr, fallback_rtype)
+            prefix = _module_prefix(address)
+            for ref_name in ref_names:
+                exact = [
+                    c for c in changes
+                    if _rtype_from_addr(c.address) == fallback_rtype
+                    and _module_prefix(c.address) == prefix
+                    and _resource_name(c.address) == ref_name
+                ]
+                if len(exact) == 1:
+                    return exact[0], []
+                if len(exact) > 1:
+                    # for_each: disambiguate by own key
+                    own_key = _for_each_key(address)
+                    if own_key:
+                        km = [m for m in exact if _for_each_key(m.address) == own_key]
+                        if len(km) == 1:
+                            return km[0], []
+                    return None, [
+                        f"multiple {fallback_rtype}.{ref_name} in plan for reference {expr!r}"
+                    ]
+            # No usable name reference — fall through to type-only matching
+
+    return _find_sibling(changes, address, fallback_rtype)
+
+
+# ---------------------------------------------------------------------------
+# Cross-plan resolvers (no az CLI call; derive ID from sibling plan resource)
+# ---------------------------------------------------------------------------
+
+def _resolve_sub_id(changes: list, address: str, plan_file: str, own_rtype: str) -> str:
+    """Resolve subscription_id via provider chain, falling back to attribute scanning."""
+    from .ids import collect_subscription_id
+    from .config import get_subscription_id_for_resource
+    return (get_subscription_id_for_resource(plan_file, address, own_rtype, _resource_name(address))
+            or collect_subscription_id(changes)
+            or "<subscription-id>")
+
+
+def _resolver_azurerm_virtual_network_dns_servers(
+    attrs: dict, address: str, changes: list, plan_file: str,
+) -> ResolverResult:
+    _, missing = _require(attrs, "virtual_network_id")
+    if not missing:
+        return None, []
+
+    sibling, errors = _find_referenced_resource(
+        changes, address, plan_file,
+        "azurerm_virtual_network_dns_servers", "virtual_network_id",
+        "azurerm_virtual_network",
+    )
+    if sibling is None:
+        return None, [f"virtual_network_id (computed — {'; '.join(errors)})"]
+
+    vnet_name = sibling.after_attrs.get("name")
+    vnet_rg   = sibling.after_attrs.get("resource_group_name")
+    if not vnet_name or vnet_name is UNKNOWN or not vnet_rg or vnet_rg is UNKNOWN:
+        return None, ["virtual_network_id (computed — VNet name/resource_group not available in plan)"]
+
+    sub_id    = _resolve_sub_id(changes, address, plan_file, "azurerm_virtual_network_dns_servers")
+    vnet_id   = (f"/subscriptions/{sub_id}/resourceGroups/{vnet_rg}"
+                 f"/providers/Microsoft.Network/virtualNetworks/{vnet_name}")
+    import_id = f"{vnet_id}/dnsServers/default"
+
+    desc = f"cross-plan: VNet {vnet_name!r} in rg {vnet_rg!r}"
+    def execute() -> tuple[str, str]:
+        return import_id, ""
+    return (desc, execute), []
+
+
+def _resolver_subnet_association(
+    attrs: dict, address: str, changes: list, plan_file: str,
+) -> ResolverResult:
+    """Shared resolver for route-table and NSG subnet associations."""
+    _, missing = _require(attrs, "subnet_id")
+    if not missing:
+        return None, []
+
+    own_rtype = _rtype_from_addr(address)
+    sibling, errors = _find_referenced_resource(
+        changes, address, plan_file, own_rtype, "subnet_id", "azurerm_subnet",
+    )
+    if sibling is None:
+        return None, [f"subnet_id (computed — {'; '.join(errors)})"]
+
+    sn      = sibling.after_attrs
+    rg      = sn.get("resource_group_name")
+    vnet    = sn.get("virtual_network_name")
+    sn_name = sn.get("name")
+    if any(x is None or x is UNKNOWN for x in [rg, vnet, sn_name]):
+        return None, ["subnet_id (computed — subnet attrs not available in plan)"]
+
+    sub_id    = _resolve_sub_id(changes, address, plan_file, own_rtype)
+    subnet_id = (f"/subscriptions/{sub_id}/resourceGroups/{rg}/providers"
+                 f"/Microsoft.Network/virtualNetworks/{vnet}/subnets/{sn_name}")
+
+    desc = f"cross-plan: subnet {sn_name!r} in VNet {vnet!r}"
+    def execute() -> tuple[str, str]:
+        return subnet_id, ""
+    return (desc, execute), []
+
+
+def _resolver_keyvault_child(id_builder: Callable) -> Callable:
+    """Factory: build a cross-plan resolver for any azurerm_key_vault_* child resource."""
+    def _resolver(attrs: dict, address: str, changes: list, plan_file: str) -> ResolverResult:
+        _, missing = _require(attrs, "key_vault_id")
+        if not missing:
+            return None, []
+
+        own_rtype = _rtype_from_addr(address)
+        sibling, errors = _find_referenced_resource(
+            changes, address, plan_file, own_rtype, "key_vault_id", "azurerm_key_vault",
+        )
+        if sibling is None:
+            return None, [f"key_vault_id (computed — {'; '.join(errors)})"]
+
+        kv      = sibling.after_attrs
+        kv_name = kv.get("name")
+        kv_rg   = kv.get("resource_group_name")
+        if not kv_name or kv_name is UNKNOWN:
+            return None, ["key_vault_id (computed — Key Vault name not available in plan)"]
+
+        sub_id = _resolve_sub_id(changes, address, plan_file, own_rtype)
+        kv_id  = (f"/subscriptions/{sub_id}/resourceGroups/{kv_rg}"
+                  f"/providers/Microsoft.KeyVault/vaults/{kv_name}")
+
+        try:
+            import_id = id_builder(attrs, kv_id, kv_name)
+        except Exception as exc:
+            return None, [f"key_vault_id (cross-plan build failed: {exc})"]
+
+        desc = f"cross-plan: Key Vault {kv_name!r}"
+        def execute() -> tuple[str, str]:
+            return import_id, ""
+        return (desc, execute), []
+    return _resolver
+
+
+_CROSS_PLAN_RESOLVERS: dict[str, Callable[[dict, str, list, str], ResolverResult]] = {
+    "azurerm_virtual_network_dns_servers":               _resolver_azurerm_virtual_network_dns_servers,
+    "azurerm_subnet_route_table_association":             _resolver_subnet_association,
+    "azurerm_subnet_network_security_group_association":  _resolver_subnet_association,
+    "azurerm_key_vault_access_policy":   _resolver_keyvault_child(
+        lambda a, kv_id, _: f"{kv_id}/objectId/{a.get('object_id', '<object_id>')}",
+    ),
+    "azurerm_key_vault_certificate":     _resolver_keyvault_child(
+        lambda a, _, kv_name: f"https://{kv_name}.vault.azure.net/certificates/{a.get('name', '<name>')}",
+    ),
+    "azurerm_key_vault_secret":          _resolver_keyvault_child(
+        lambda a, _, kv_name: f"https://{kv_name}.vault.azure.net/secrets/{a.get('name', '<name>')}",
+    ),
+}
+
+
 _RESOLVERS: dict[str, Callable[[dict], Resolver | None]] = {
     "azurerm_role_assignment":                            _resolver_azurerm_role_assignment,
     "azuread_service_principal":                          _resolver_azuread_service_principal,
@@ -126,7 +387,11 @@ _RESOLVERS: dict[str, Callable[[dict], Resolver | None]] = {
 
 
 def get_resolver(rtype: str, attrs: dict) -> tuple[Resolver | None, list[str]]:
-    """Return (resolver_or_None, missing_attrs). missing_attrs is non-empty when attrs are unknown."""
+    """Return (live_resolver_or_None, missing_attrs) for an `az` CLI resolver.
+
+    Live resolvers perform a network lookup and are gated behind a confirmation
+    prompt in the CLI. missing_attrs is non-empty when required attrs are unavailable.
+    """
     factory = _RESOLVERS.get(rtype)
     if not factory:
         return None, []
@@ -136,6 +401,35 @@ def get_resolver(rtype: str, attrs: dict) -> tuple[Resolver | None, list[str]]:
         return None, []
 
 
+def resolve_cross_plan(
+    rtype: str,
+    attrs: dict,
+    address: str,
+    changes: list,
+    plan_file: str,
+) -> tuple[str | None, list[str]]:
+    """Resolve an ID deterministically from a sibling resource in the same plan.
+
+    Cross-plan resolvers are pure (no network), so the result is applied automatically
+    without prompting. Returns:
+      (id_str, [])      — resolved successfully
+      (None, missing)   — a cross-plan resolver exists but a reference is unresolvable
+      (None, [])        — no cross-plan resolver registered for this type
+    """
+    factory = _CROSS_PLAN_RESOLVERS.get(rtype)
+    if not factory:
+        return None, []
+    try:
+        resolver, missing = factory(attrs, address, changes, plan_file)
+    except Exception:
+        return None, []
+    if resolver is None:
+        return None, missing
+    _, execute = resolver
+    resolved_id, _err = execute()
+    return (resolved_id or None), missing
+
+
 def has_resolver(rtype: str) -> bool:
-    """Return True if a resolver is registered for this resource type."""
-    return rtype in _RESOLVERS
+    """Return True if any resolver (live or cross-plan) is registered for this resource type."""
+    return rtype in _RESOLVERS or rtype in _CROSS_PLAN_RESOLVERS

@@ -5,10 +5,10 @@ import re
 import sys
 
 from .cty import UNKNOWN
-from .config import get_attr_expr
+from .config import get_attr_expr, get_subscription_id_for_resource
 from .ids import build_id, collect_subscription_id, resource_type, IMPORT_UNSUPPORTED
 from .plan import Action, parse_plan, read_tfplan_bytes
-from .resolvers import get_resolver, has_resolver
+from .resolvers import get_resolver, has_resolver, resolve_cross_plan
 
 
 def _ask(prompt: str, choices: list[str]) -> str:
@@ -112,7 +112,13 @@ def main() -> None:
                     print(f"    {k:30s} = {val_str}")
         return
 
-    sub_id = collect_subscription_id(changes) or "<subscription-id>"
+    _global_sub_id = collect_subscription_id(changes) or "<subscription-id>"
+
+    def _sub_id_for(c) -> str:
+        rtype_c = resource_type(c.address)
+        rname_c = re.sub(r"\[[^\]]*\]$", "", c.address).rsplit(".", 1)[-1]
+        return (get_subscription_id_for_resource(args.plan_file, c.address, rtype_c, rname_c)
+                or _global_sub_id)
 
     if args.list:
         if args.powershell:
@@ -123,7 +129,7 @@ def main() -> None:
             print(")")
         else:
             for c in changes:
-                import_id, _ = build_id(c, sub_id)
+                import_id, _ = build_id(c, _sub_id_for(c))
                 print(f"{c.address}\t{import_id}")
         return
 
@@ -151,6 +157,20 @@ def main() -> None:
                 print(f"# import not supported for {rtype}:")
                 print(f"# {c.address}")
                 continue
+
+            # Cross-plan resolution is deterministic (no network) — apply it
+            # automatically, like a formula, without prompting.
+            cp_missing: list[str] = []
+            if not args.no_resolve:
+                cp_id, cp_missing = resolve_cross_plan(
+                    rtype, c.after_attrs, c.address, changes, args.plan_file
+                )
+                if cp_id:
+                    print("import {")
+                    print(f"  to = {c.address}")
+                    print(f'  id = "{cp_id}"')
+                    print("}")
+                    continue
 
             resolver, missing_attrs = (None, []) if args.no_resolve else get_resolver(rtype, c.after_attrs)
 
@@ -190,7 +210,7 @@ def main() -> None:
                     if not resolved_id:
                         msg = f"ERROR: {err}" if err else "(no result)"
                         print(f"  {msg}", file=sys.stderr)
-                        formula_id, derived = build_id(c, sub_id)
+                        formula_id, derived = build_id(c, _sub_id_for(c))
                         print(f'  Continue with placeholder id = "{formula_id}"?', file=sys.stderr)
                         ans = _ask("Continue?", ["y", "n"])
                         if ans == "n":
@@ -199,21 +219,22 @@ def main() -> None:
                     else:
                         import_id, is_derived = resolved_id, True
                 else:
-                    import_id, is_derived = build_id(c, sub_id)
+                    import_id, is_derived = build_id(c, _sub_id_for(c))
 
             else:
-                import_id, is_derived = build_id(c, sub_id)
+                import_id, is_derived = build_id(c, _sub_id_for(c))
                 has_placeholder = "<" in import_id
 
                 if rtype in type_never:
                     continue
 
                 if has_placeholder and import_state != "always":
-                    if missing_attrs:
+                    detail_attrs = missing_attrs or cp_missing
+                    if detail_attrs:
                         parts = []
                         addr_stripped = re.sub(r"\[.*?\]$", "", c.address)
                         res_label = addr_stripped.rsplit(".", 1)[-1]
-                        for m_attr in missing_attrs:
+                        for m_attr in detail_attrs:
                             attr_name = m_attr.split(" ")[0]
                             result = get_attr_expr(args.plan_file, c.address, rtype, res_label, attr_name)
                             if result:
@@ -225,8 +246,13 @@ def main() -> None:
                         reason = "; ".join(parts)
                     elif has_resolver(rtype):
                         reason = "required attributes are unknown in plan"
+                    elif is_derived:
+                        placeholders = re.findall(r"<([^>]+)>", import_id)
+                        reason = f"computed attribute(s) in plan: {', '.join(placeholders)}"
                     else:
                         reason = "no resolver registered for this type"
+                    print(f"\n{c.address}", file=sys.stderr)
+                    print(f'  id = "{import_id}"', file=sys.stderr)
                     ans = _ask_no_resolve(rtype, reason)
                     if ans == "n":
                         import_state = "never"

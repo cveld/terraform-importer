@@ -8,6 +8,8 @@ Generates Terraform `import {}` blocks directly from a binary `.plan` file — n
 
 For resources whose IDs are assigned at creation time (Entra ID resources, Azure role assignments), the tool calls the Azure CLI to look up the real ID interactively.
 
+Resources whose ID depends on another resource in the same plan (e.g. `azurerm_virtual_network_dns_servers` needs the VNet ID, subnet associations need the subnet ID) are resolved automatically by reading the plan's HCL references — no CLI call needed. The correct subscription ID is determined per resource by following the `azurerm` provider chain through the config, so plans that span multiple subscriptions get the right ID on each resource.
+
 ## Installation
 
 ```sh
@@ -46,6 +48,7 @@ terraform apply terraform.plan
 The tool prompts per resource based on what it can derive:
 
 - **Complete formula-based ID** — emitted immediately, no prompt.
+- **Cross-plan ID** (depends on another resource in the plan) — resolved and emitted automatically, no prompt.
 - **Entra ID resource or Azure role assignment** — shows the `az` command it will run and asks confirmation.
 - **Unresolvable ID** — shows which attribute is computed and its HCL reference chain; asks whether to skip.
 - **Unsupported import** (e.g. `azuread_application_password`) — emits a comment block.
@@ -84,7 +87,7 @@ import {
 
 ## Adding a resource type
 
-See `docs/resolvers.md` for how to add a formula or a live resolver.
+See `docs/resolvers.md` for how to add a formula, a cross-plan resolver, or a live resolver.
 
 Quick formula example — extend `_ID_FORMULAS` in `generate_imports/ids.py`:
 
