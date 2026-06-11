@@ -99,22 +99,49 @@ def _resolver_azuread_application_federated_identity_credential(a: dict) -> Reso
 
 
 def _resolver_azurerm_role_assignment(a: dict) -> ResolverResult:
-    v, missing = _require(a, "scope", "principal_id", "role_definition_id")
-    if missing:
-        return None, missing
-    desc = (
-        f"az role assignment list --scope {v['scope']!r} --assignee {v['principal_id']!r} "
-        f"--query \"[?roleDefinitionId=='{v['role_definition_id']}'].id | [0]\" -o tsv"
-    )
-    def execute() -> tuple[str, str]:
-        return _az(
-            "role", "assignment", "list",
-            "--scope", v["scope"],
-            "--assignee", v["principal_id"],
-            "--query", f"[?roleDefinitionId=='{v['role_definition_id']}'].id | [0]",
-            "-o", "tsv",
+    v_base, missing_base = _require(a, "scope", "principal_id")
+    if missing_base:
+        return None, missing_base
+
+    scope = v_base["scope"]
+    principal = v_base["principal_id"]
+
+    v_id, missing_id = _require(a, "role_definition_id")
+    if not missing_id:
+        role_def_id = v_id["role_definition_id"]
+        desc = (
+            f"az role assignment list --scope {scope!r} --assignee {principal!r} "
+            f"--query \"[?roleDefinitionId=='{role_def_id}'].id | [0]\" -o tsv"
         )
-    return (desc, execute), []
+        def execute() -> tuple[str, str]:
+            return _az(
+                "role", "assignment", "list",
+                "--scope", scope,
+                "--assignee", principal,
+                "--query", f"[?roleDefinitionId=='{role_def_id}'].id | [0]",
+                "-o", "tsv",
+            )
+        return (desc, execute), []
+
+    v_nm, missing_nm = _require(a, "role_definition_name")
+    if not missing_nm:
+        role_name = v_nm["role_definition_name"]
+        desc = (
+            f"az role assignment list --scope {scope!r} --assignee {principal!r} "
+            f"--role {role_name!r} --query \"[0].id\" -o tsv"
+        )
+        def execute() -> tuple[str, str]:
+            return _az(
+                "role", "assignment", "list",
+                "--scope", scope,
+                "--assignee", principal,
+                "--role", role_name,
+                "--query", "[0].id",
+                "-o", "tsv",
+            )
+        return (desc, execute), []
+
+    return None, [*missing_id, *missing_nm]
 
 
 # ---------------------------------------------------------------------------
