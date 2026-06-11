@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/cveld/terraform-importer/compare/v0.3.0...v0.3.1) (2026-06-11)
+
+
+### Bug Fixes
+
+* fall back to role_definition_name when role_definition_id is computed ([b359c26](https://github.com/cveld/terraform-importer/commit/b359c268bf3f2c582c41afb156b67870dfc12b1e))
+
 ## [0.3.0](https://github.com/cveld/terraform-importer/compare/v0.2.1...v0.3.0) (2026-06-08)
 
 
