@@ -67,7 +67,10 @@ _ID_FORMULAS: dict[str, Any] = {
     # Identity
     "azurerm_user_assigned_identity":
         lambda a, s: _arm(s, _str(a,"resource_group_name"), "Microsoft.ManagedIdentity/userAssignedIdentities", _str(a,"name")),
-
+    
+    # App Configuration
+    "azurerm_app_configuration":
+        lambda a, s: _arm(s, _str(a,"resource_group_name"), "Microsoft.AppConfiguration/configurationStores", _str(a,"name")),
     # Key Vault
     "azurerm_key_vault":
         lambda a, s: _arm(s, _str(a,"resource_group_name"), "Microsoft.KeyVault/vaults", _str(a,"name")),
@@ -127,6 +130,12 @@ _ID_FORMULAS: dict[str, Any] = {
         lambda a, s: _arm(s, _str(a,"resource_group_name"), "Microsoft.Network/privateEndpoints", _str(a,"name")),
     "azurerm_private_dns_zone":
         lambda a, s: _arm(s, _str(a,"resource_group_name"), "Microsoft.Network/privateDnsZones", _str(a,"name")),
+    # DNS A Record
+    "azurerm_dns_a_record":
+        lambda a, s: _arm(s, _str(a,"resource_group_name"), f"Microsoft.Network/dnsZones/{_str(a,'zone_name')}/A", _str(a,"name")),
+    # Private DNS A Record
+    "azurerm_private_dns_a_record":
+        lambda a, s: _arm(s, _str(a,"resource_group_name"), f"Microsoft.Network/privateDnsZones/{_str(a,'zone_name')}/A", _str(a,"name")),
     "azurerm_firewall":
         lambda a, s: _arm(s, _str(a,"resource_group_name"), "Microsoft.Network/azureFirewalls", _str(a,"name")),
     "azurerm_firewall_policy":
@@ -147,6 +156,14 @@ _ID_FORMULAS: dict[str, Any] = {
         lambda a, _: f"{_str(a,'virtual_hub_id')}/hubVirtualNetworkConnections/{_str(a,'name')}",
     "azurerm_private_dns_zone_virtual_network_link":
         lambda a, s: _arm(s, _str(a,"resource_group_name"), "Microsoft.Network/privateDnsZones", _str(a,"private_dns_zone_name"), "virtualNetworkLinks", _str(a,"name")),
+
+    # CosmosDB
+    "azurerm_cosmosdb_account":
+        lambda a, s: _arm(s, _str(a,"resource_group_name"), "Microsoft.DocumentDB/databaseAccounts", _str(a,"name")),
+    "azurerm_cosmosdb_sql_database":
+        lambda a, s: _arm(s, _str(a,"resource_group_name"), "Microsoft.DocumentDB/databaseAccounts", _str(a,"account_name"), "sqlDatabases", _str(a,"name")),
+    "azurerm_cosmosdb_sql_container":
+        lambda a, s: _arm(s, _str(a,"resource_group_name"), "Microsoft.DocumentDB/databaseAccounts", _str(a,"account_name"), "sqlDatabases", _str(a,"database_name"), "containers", _str(a,"name")),
 
     # Container
     "azurerm_container_registry":
