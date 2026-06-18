@@ -38,6 +38,7 @@ Some resources have a computed ID attribute that references a sibling resource i
 | `azurerm_key_vault_access_policy` | `azurerm_key_vault` in same module | `{kv_id}/objectId/{object_id}` |
 | `azurerm_key_vault_certificate` | `azurerm_key_vault` in same module | Key Vault certificate URL |
 | `azurerm_key_vault_secret` | `azurerm_key_vault` in same module | Key Vault secret URL |
+| `azurerm_storage_container` | `azurerm_storage_account` in same module (via computed `storage_account_id`) | container ARM ID |
 
 Cross-plan resolvers are pure (no network), so the tool applies their result **automatically without prompting** — like a formula. They are attempted before live resolvers. If the sibling resource is not found in the plan, or if multiple siblings exist and the for_each key does not disambiguate, the resolver returns a `missing_attrs` description and the tool falls through to the normal placeholder prompt (which then shows that reason).
 

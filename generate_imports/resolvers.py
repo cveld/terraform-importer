@@ -448,7 +448,43 @@ def _resolver_keyvault_child(id_builder: Callable) -> Callable:
     return _resolver
 
 
+def _resolver_storage_container(
+    attrs: dict, address: str, changes: list, plan_file: str,
+) -> ResolverResult:
+    """Resolve azurerm_storage_container when it references its account by the
+    computed `storage_account_id` (azurerm v4 schema, no storage_account_name)."""
+    _, missing = _require(attrs, "storage_account_id")
+    if not missing:
+        return None, []  # known id / older schema — let the formula handle it
+
+    own_rtype = _rtype_from_addr(address)
+    sibling, errors = _find_referenced_resource(
+        changes, address, plan_file, own_rtype, "storage_account_id",
+        "azurerm_storage_account",
+    )
+    if sibling is None:
+        return None, [f"storage_account_id (computed — {'; '.join(errors)})"]
+
+    sa        = sibling.after_attrs
+    sa_name   = sa.get("name")
+    sa_rg     = sa.get("resource_group_name")
+    container = attrs.get("name")
+    if any(x is None or x is UNKNOWN for x in [sa_name, sa_rg, container]):
+        return None, ["storage_account_id (computed — storage account attrs not available in plan)"]
+
+    sub_id    = _resolve_sub_id(changes, address, plan_file, own_rtype)
+    import_id = (f"/subscriptions/{sub_id}/resourceGroups/{sa_rg}/providers"
+                 f"/Microsoft.Storage/storageAccounts/{sa_name}"
+                 f"/blobServices/default/containers/{container}")
+
+    desc = f"cross-plan: storage account {sa_name!r} in rg {sa_rg!r}"
+    def execute() -> tuple[str, str]:
+        return import_id, ""
+    return (desc, execute), []
+
+
 _CROSS_PLAN_RESOLVERS: dict[str, Callable[[dict, str, list, str], ResolverResult]] = {
+    "azurerm_storage_container":                          _resolver_storage_container,
     "azurerm_virtual_network_dns_servers":               _resolver_azurerm_virtual_network_dns_servers,
     "azurerm_subnet_route_table_association":             _resolver_subnet_association,
     "azurerm_subnet_network_security_group_association":  _resolver_subnet_association,
