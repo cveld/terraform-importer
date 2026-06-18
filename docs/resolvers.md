@@ -44,6 +44,17 @@ Cross-plan resolvers are pure (no network), so the tool applies their result **a
 
 To find the referenced sibling, `_find_referenced_resource` first reads the HCL expression for the computed attribute (e.g. `virtual_network_id = azurerm_virtual_network.vnet.id`) and matches the exact `type.name` in the same module context. If the HCL is unavailable, it falls back to type-only matching within the module.
 
+### Cross-module reference tracing
+
+When the reference crosses a module boundary, same-module matching can't follow it. `_find_referenced_resource` then falls back to `config.trace_reference`, which resolves the chain hop by hop through module inputs (`var.x`), locals (`local.x`), and module outputs (`module.m.out`) down to the target resource. For example a key vault secret with `key_vault_id = var.vault.id`:
+
+```
+var.vault.id → local.keyvault_secrets_obj.id → module.kv.core.vault.id
+            → module.kv["core"].azurerm_key_vault.keyvault
+```
+
+`trace_reference` takes an injectable module reader (zip-backed in production, dict-backed in tests). `_match_target_change` then links the traced target — module path with instance keys + type + name — to a plan change.
+
 ## Subscription ID resolution
 
 ARM IDs embed a subscription ID. A plan can span **multiple** subscriptions — each `azurerm` provider (default or aliased) is bound to exactly one. The tool resolves the correct subscription per resource by following the provider chain through the plan's `tfconfig/`:
