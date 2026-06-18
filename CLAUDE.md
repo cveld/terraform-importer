@@ -8,6 +8,10 @@ Generates Terraform `import {}` blocks from a binary `.plan` file — no `terraf
 
 (The console script is `generate-imports-from-plan`, defined in `pyproject.toml` `[project.scripts]` — not `generate_imports`.)
 
+## Tests
+
+`uv run --group dev pytest` — unit tests in `tests/` use synthetic in-memory fixtures (fake `ResourceChange` objects, inline HCL), no `.plan` file or live `az` needed.
+
 ## Module layout
 
 | module | responsibility |

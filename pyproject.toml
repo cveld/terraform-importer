@@ -12,6 +12,14 @@ dependencies = [
 [project.urls]
 Repository = "https://github.com/cveld/terraform-importer"
 
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 [project.scripts]
 generate-imports-from-plan = "generate_imports:main"
 
