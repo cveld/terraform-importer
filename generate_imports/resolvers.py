@@ -272,9 +272,40 @@ def _find_referenced_resource(
                     return None, [
                         f"multiple {fallback_rtype}.{ref_name} in plan for reference {expr!r}"
                     ]
-            # No usable name reference — fall through to type-only matching
+            # No usable name reference — fall through to chain trace / sibling
+
+        # Cross-module chain trace: follow the reference through module inputs,
+        # locals, and module outputs (var.x / local.x / module.m.out) down to the
+        # target resource. Handles references that cross module boundaries, which
+        # the same-module matching above cannot follow.
+        from .config import trace_attr_to_resource
+        target = trace_attr_to_resource(plan_file, address, own_rtype,
+                                        _resource_name(address), attr)
+        if target and target[1] == fallback_rtype:
+            matched = _match_target_change(changes, target)
+            if matched is not None:
+                return matched, []
 
     return _find_sibling(changes, address, fallback_rtype)
+
+
+def _match_target_change(changes: list, target):
+    """Match a chain-trace target (module_context, rtype, name) to a change."""
+    from .config import _module_context
+    tctx, t_rtype, t_rname = target
+    for c in changes:
+        if _rtype_from_addr(c.address) != t_rtype:
+            continue
+        if _resource_name(c.address) != t_rname:
+            continue
+        cctx = _module_context(c.address)
+        if len(cctx) != len(tctx):
+            continue
+        # names must match positionally; a specified instance key must match too
+        if all(tn == cn and (tk is None or tk == ck)
+               for (tn, tk), (cn, ck) in zip(tctx, cctx)):
+            return c
+    return None
 
 
 # ---------------------------------------------------------------------------

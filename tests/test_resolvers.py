@@ -6,6 +6,7 @@ from generate_imports.cty import UNKNOWN
 from generate_imports.resolvers import (
     _find_sibling,
     _for_each_key,
+    _match_target_change,
     _module_prefix,
     _resource_name,
     _resource_refs,
@@ -164,3 +165,26 @@ def test_role_assignment_unresolved_scope_without_context():
     resolver, missing = get_resolver("azurerm_role_assignment", attrs)
     assert resolver is None
     assert any("scope" in m for m in missing)
+
+
+# ---------------------------------------------------------------------------
+# _match_target_change — links a chain-trace target to a plan change
+# ---------------------------------------------------------------------------
+
+def test_match_target_change_with_instance_key(change):
+    kv = change('module.infra.module.kv["core"].azurerm_key_vault.keyvault', name="v")
+    other = change('module.infra.module.kv["data"].azurerm_key_vault.keyvault', name="v2")
+    target = ([("infra", None), ("kv", "core")], "azurerm_key_vault", "keyvault")
+    assert _match_target_change([kv, other], target) is kv
+
+
+def test_match_target_change_none_key_matches_any(change):
+    rg = change("module.root.module.child.azurerm_resource_group.rg", name="r")
+    target = ([("root", None), ("child", None)], "azurerm_resource_group", "rg")
+    assert _match_target_change([rg], target) is rg
+
+
+def test_match_target_change_no_match(change):
+    kv = change('module.infra.module.kv["core"].azurerm_key_vault.keyvault', name="v")
+    target = ([("infra", None), ("kv", "other")], "azurerm_key_vault", "keyvault")
+    assert _match_target_change([kv], target) is None

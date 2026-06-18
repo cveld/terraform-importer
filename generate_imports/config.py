@@ -330,3 +330,168 @@ def _expr_str(val: object) -> str:
         items = ", ".join(f"{k} = {_expr_str(v)}" for k, v in val.items())
         return "{" + items + "}"
     return str(val)
+
+
+# ---------------------------------------------------------------------------
+# Cross-module reference chain tracing
+# ---------------------------------------------------------------------------
+#
+# Resolves a computed attribute that references another resource through module
+# boundaries — module inputs (`var.x`), locals (`local.x`), and module outputs
+# (`module.m.out`) — down to the target resource. This is genuine multi-hop
+# resolution (unlike get_attr_expr, which only shows one expression verbatim).
+
+def _module_context(address: str) -> list[tuple[str, str | None]]:
+    """Parse a resource address into its module path as (name, instance_key) pairs.
+
+    'module.infra.module.kv["core"].azurerm_x.n' → [('infra', None), ('kv', 'core')]
+    """
+    parts = address.split(".")
+    ctx: list[tuple[str, str | None]] = []
+    i = 0
+    while i + 1 < len(parts) and parts[i] == "module":
+        seg = parts[i + 1]
+        m = re.match(r'([^\[]+)(?:\[\s*"?([^"\]]+)"?\s*\])?$', seg)
+        if m:
+            ctx.append((m.group(1), m.group(2)))
+        i += 2
+    return ctx
+
+
+def _split_ref(expr: str) -> list[str]:
+    """Tokenise an HCL reference, normalising index access to dot tokens.
+
+    '${module.kv["core"].vault.id}' → ['module', 'kv', 'core', 'vault', 'id']
+    """
+    s = expr.strip()
+    if s.startswith("${") and s.endswith("}"):
+        s = s[2:-1].strip()
+    s = re.sub(r'\[\s*"([^"]*)"\s*\]', r".\1", s)
+    s = re.sub(r"\[\s*'([^']*)'\s*\]", r".\1", s)
+    s = re.sub(r"\[\s*(\d+)\s*\]", r".\1", s)
+    return [t for t in s.split(".") if t]
+
+
+def _index_into(val: object, path: list[str]) -> tuple[str, list[str]]:
+    """Descend a parsed HCL object along `path` field names.
+
+    Stops as soon as the value is no longer an object (e.g. a reference string),
+    returning the remaining path so the caller can apply it to whatever the
+    reference resolves to.
+    """
+    if isinstance(val, list) and len(val) == 1:
+        val = val[0]
+    while path and isinstance(val, dict):
+        field = path[0]
+        if field in val:
+            val = val[field]
+        elif f'"{field}"' in val:
+            val = val[f'"{field}"']
+        else:
+            break
+        if isinstance(val, list) and len(val) == 1:
+            val = val[0]
+        path = path[1:]
+    return _expr_str(val), path
+
+
+def _find_local_raw(docs: list[dict], name: str):
+    for doc in docs:
+        for block in doc.get("locals", []):
+            if name in block:
+                return block[name]
+            if f'"{name}"' in block:
+                return block[f'"{name}"']
+    return None
+
+
+def _find_output_raw(docs: list[dict], name: str):
+    for doc in docs:
+        for block in doc.get("output", []):
+            body = _get_block_body(block, name)
+            if body is not None and "value" in body:
+                return body["value"]
+    return None
+
+
+def _output_names(docs: list[dict]) -> set[str]:
+    names: set[str] = set()
+    for doc in docs:
+        for block in doc.get("output", []):
+            for k in block:
+                names.add(k.strip('"'))
+    return names
+
+
+def trace_reference(read_module, context, tokens, depth: int = 0):
+    """Resolve a reference token list to its target resource.
+
+    `read_module(module_names)` returns the parsed HCL docs for a module (the
+    dependency injection point — production passes a zip-backed reader, tests a
+    dict-backed fake). `context` is the current module path as (name, key) pairs.
+
+    Returns (target_context, resource_type, resource_name) or None.
+    """
+    if depth > 32 or not tokens:
+        return None
+    head = tokens[0]
+
+    if head == "var":
+        if len(tokens) < 2 or not context:
+            return None
+        var_name, rest = tokens[1], tokens[2:]
+        child_name = context[-1][0]
+        parent = context[:-1]
+        raw = _find_module_input_raw(read_module([n for n, _ in parent]), child_name, var_name)
+        if raw is None:
+            return None
+        expr2, rest2 = _index_into(raw, rest)
+        return trace_reference(read_module, parent, _split_ref(expr2) + rest2, depth + 1)
+
+    if head == "local":
+        if len(tokens) < 2:
+            return None
+        name, rest = tokens[1], tokens[2:]
+        raw = _find_local_raw(read_module([n for n, _ in context]), name)
+        if raw is None:
+            return None
+        expr2, rest2 = _index_into(raw, rest)
+        return trace_reference(read_module, context, _split_ref(expr2) + rest2, depth + 1)
+
+    if head == "module":
+        if len(tokens) < 3:
+            return None
+        mod_name = tokens[1]
+        child_docs = read_module([n for n, _ in context] + [mod_name])
+        outputs = _output_names(child_docs)
+        idx, key = 2, None
+        if tokens[idx] not in outputs:          # for_each/count instance key
+            key, idx = tokens[idx], idx + 1
+        if idx >= len(tokens):
+            return None
+        out_name, rest = tokens[idx], tokens[idx + 1:]
+        raw = _find_output_raw(child_docs, out_name)
+        if raw is None:
+            return None
+        expr2, rest2 = _index_into(raw, rest)
+        return trace_reference(read_module, context + [(mod_name, key)],
+                               _split_ref(expr2) + rest2, depth + 1)
+
+    # Resource reference: <type>.<name>[...]
+    if len(tokens) >= 2:
+        return (context, tokens[0], tokens[1])
+    return None
+
+
+def trace_attr_to_resource(plan_file: str, address: str, resource_type: str,
+                           resource_name: str, attr: str):
+    """Trace a computed attribute's reference chain to its target resource.
+
+    Returns (target_context, resource_type, resource_name) or None.
+    """
+    result = get_attr_expr(plan_file, address, resource_type, resource_name, attr)
+    if not result:
+        return None
+    expr, _ = result
+    reader = lambda names: _read_module_hcl(plan_file, _tfdir(names))  # noqa: E731
+    return trace_reference(reader, _module_context(address), _split_ref(expr))
