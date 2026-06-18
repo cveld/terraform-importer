@@ -40,7 +40,7 @@ def _require(attrs: dict, *keys: str) -> tuple[dict[str, str], list[str]]:
     return values, missing
 
 
-def _resolver_azuread_service_principal(a: dict) -> ResolverResult:
+def _resolver_azuread_service_principal(a: dict, *_) -> ResolverResult:
     v, missing = _require(a, "client_id")
     if missing:
         return None, missing
@@ -50,7 +50,7 @@ def _resolver_azuread_service_principal(a: dict) -> ResolverResult:
     return (desc, execute), []
 
 
-def _resolver_azuread_application(a: dict) -> ResolverResult:
+def _resolver_azuread_application(a: dict, *_) -> ResolverResult:
     v, missing = _require(a, "display_name")
     if missing:
         return None, missing
@@ -61,7 +61,7 @@ def _resolver_azuread_application(a: dict) -> ResolverResult:
     return (desc, execute), []
 
 
-def _resolver_azuread_app_role_assignment(a: dict) -> ResolverResult:
+def _resolver_azuread_app_role_assignment(a: dict, *_) -> ResolverResult:
     v, missing = _require(a, "resource_object_id", "principal_object_id", "app_role_id")
     if missing:
         return None, missing
@@ -79,7 +79,7 @@ def _resolver_azuread_app_role_assignment(a: dict) -> ResolverResult:
     return (desc, execute), []
 
 
-def _resolver_azuread_application_federated_identity_credential(a: dict) -> ResolverResult:
+def _resolver_azuread_application_federated_identity_credential(a: dict, *_) -> ResolverResult:
     v, missing = _require(a, "application_id", "display_name")
     if missing:
         return None, missing
@@ -98,50 +98,51 @@ def _resolver_azuread_application_federated_identity_credential(a: dict) -> Reso
     return (desc, execute), []
 
 
-def _resolver_azurerm_role_assignment(a: dict) -> ResolverResult:
-    v_base, missing_base = _require(a, "scope", "principal_id")
+def _resolver_azurerm_role_assignment(
+    a: dict, address: str | None = None, changes: list | None = None,
+    plan_file: str | None = None,
+) -> ResolverResult:
+    # `scope` is often computed (references a sibling resource in the plan, e.g.
+    # azurerm_app_configuration.conf[each.key].id). Resolve it cross-plan first
+    # so the live lookup below has a concrete --scope.
+    scope = a.get("scope")
+    if scope is UNKNOWN or scope in (None, ""):
+        scope = _resolve_scope_from_plan(address, changes, plan_file)
+
+    missing_base: list[str] = []
+    if not scope or scope is UNKNOWN:
+        missing_base.append("scope (computed — references another resource)")
+    v_p, missing_p = _require(a, "principal_id")
+    missing_base += missing_p
     if missing_base:
         return None, missing_base
 
-    scope = v_base["scope"]
-    principal = v_base["principal_id"]
+    principal = v_p["principal_id"]
 
+    # Use --assignee-object-id (not --assignee): it bypasses the Microsoft Graph
+    # lookup, which fails for managed identities / SPs the caller can't read in
+    # Graph. The role is filtered client-side via JMESPath on the returned list.
     v_id, missing_id = _require(a, "role_definition_id")
     if not missing_id:
         role_def_id = v_id["role_definition_id"]
-        desc = (
-            f"az role assignment list --scope {scope!r} --assignee {principal!r} "
-            f"--query \"[?roleDefinitionId=='{role_def_id}'].id | [0]\" -o tsv"
-        )
-        def execute() -> tuple[str, str]:
-            return _az(
-                "role", "assignment", "list",
-                "--scope", scope,
-                "--assignee", principal,
-                "--query", f"[?roleDefinitionId=='{role_def_id}'].id | [0]",
-                "-o", "tsv",
-            )
-        return (desc, execute), []
+        query = f"[?roleDefinitionId=='{role_def_id}'].id | [0]"
+    else:
+        v_nm, missing_nm = _require(a, "role_definition_name")
+        if missing_nm:
+            return None, [*missing_id, *missing_nm]
+        query = f"[?roleDefinitionName=='{v_nm['role_definition_name']}'].id | [0]"
 
-    v_nm, missing_nm = _require(a, "role_definition_name")
-    if not missing_nm:
-        role_name = v_nm["role_definition_name"]
-        desc = (
-            f"az role assignment list --scope {scope!r} --assignee {principal!r} "
-            f"--role {role_name!r} --query \"[0].id\" -o tsv"
+    desc = (f"az role assignment list --scope {scope!r} "
+            f"--assignee-object-id {principal!r} --query {query!r} -o tsv")
+    def execute() -> tuple[str, str]:
+        return _az(
+            "role", "assignment", "list",
+            "--scope", scope,
+            "--assignee-object-id", principal,
+            "--query", query,
+            "-o", "tsv",
         )
-        def execute() -> tuple[str, str]:
-            return _az(
-                "role", "assignment", "list",
-                "--scope", scope,
-                "--assignee", principal,
-                "--role", role_name,
-                "--query", "[0].id",
-                "-o", "tsv",
-            )
-        return (desc, execute), []
-
-    return None, [*missing_id, *missing_nm]
+    return (desc, execute), []
 
 
 # ---------------------------------------------------------------------------
@@ -289,6 +290,65 @@ def _resolve_sub_id(changes: list, address: str, plan_file: str, own_rtype: str)
             or "<subscription-id>")
 
 
+# Terraform reference prefixes that are not provider resource types.
+_NON_RESOURCE_REFS = {"var", "local", "module", "data", "each", "self",
+                      "count", "path", "terraform"}
+
+
+def _resource_refs(expr: str) -> list[tuple[str, str]]:
+    """Extract (resource_type, name) references from an HCL expression.
+
+    Matches `rtype.name` where rtype looks like a provider resource type
+    (lowercase with at least one underscore, e.g. `azurerm_app_configuration`).
+    The negative lookbehind rejects a preceding dot, so `data.azurerm_x.y` and
+    other prefixed forms are excluded.
+    """
+    refs: list[tuple[str, str]] = []
+    pat = re.compile(r"(?<![\w.])([a-z][a-z0-9]*(?:_[a-z0-9]+)+)\.([A-Za-z_][A-Za-z0-9_]*)")
+    for m in pat.finditer(expr):
+        rtype, name = m.group(1), m.group(2)
+        if rtype.split("_", 1)[0] in _NON_RESOURCE_REFS:
+            continue
+        if (rtype, name) not in refs:
+            refs.append((rtype, name))
+    return refs
+
+
+def _resolve_scope_from_plan(address, changes, plan_file) -> str | None:
+    """Resolve an UNKNOWN role-assignment `scope` to a concrete resource ID.
+
+    Reads the `scope` HCL expression, finds the sibling resource it references
+    (any resource type), and builds that resource's import ID via `build_id`.
+    Returns None if the reference can't be located or doesn't fully resolve.
+    """
+    if not (plan_file and changes and address):
+        return None
+    from .config import get_attr_expr
+    from .ids import build_id
+
+    own_rtype = _rtype_from_addr(address)
+    result = get_attr_expr(plan_file, address, own_rtype, _resource_name(address), "scope")
+    if not result:
+        return None
+    expr, _ = result
+
+    prefix  = _module_prefix(address)
+    own_key = _for_each_key(address)
+    for ref_rtype, ref_name in _resource_refs(expr):
+        cands = [c for c in changes
+                 if _rtype_from_addr(c.address) == ref_rtype
+                 and _module_prefix(c.address) == prefix
+                 and _resource_name(c.address) == ref_name]
+        if len(cands) > 1 and own_key:
+            cands = [c for c in cands if _for_each_key(c.address) == own_key] or cands
+        if len(cands) == 1:
+            sub_id = _resolve_sub_id(changes, cands[0].address, plan_file, ref_rtype)
+            sid, _ = build_id(cands[0], sub_id)
+            if sid and "<" not in sid:
+                return sid
+    return None
+
+
 def _resolver_azurerm_virtual_network_dns_servers(
     attrs: dict, address: str, changes: list, plan_file: str,
 ) -> ResolverResult:
@@ -413,17 +473,21 @@ _RESOLVERS: dict[str, Callable[[dict], Resolver | None]] = {
 }
 
 
-def get_resolver(rtype: str, attrs: dict) -> tuple[Resolver | None, list[str]]:
+def get_resolver(rtype: str, attrs: dict, address: str | None = None,
+                 changes: list | None = None,
+                 plan_file: str | None = None) -> tuple[Resolver | None, list[str]]:
     """Return (live_resolver_or_None, missing_attrs) for an `az` CLI resolver.
 
     Live resolvers perform a network lookup and are gated behind a confirmation
     prompt in the CLI. missing_attrs is non-empty when required attrs are unavailable.
+    The cross-plan context (address/changes/plan_file) lets a live resolver first
+    derive a computed attribute (e.g. a role assignment's `scope`) from a sibling.
     """
     factory = _RESOLVERS.get(rtype)
     if not factory:
         return None, []
     try:
-        return factory(attrs)
+        return factory(attrs, address, changes, plan_file)
     except Exception:
         return None, []
 
