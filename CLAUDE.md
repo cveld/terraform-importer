@@ -4,7 +4,9 @@ Generates Terraform `import {}` blocks from a binary `.plan` file — no `terraf
 
 ## Entry point
 
-`generate_imports/cli.py` — run with `uv run generate_imports <plan_file>`
+`generate_imports/cli.py` — run with `uv run generate-imports-from-plan <plan_file>`
+
+(The console script is `generate-imports-from-plan`, defined in `pyproject.toml` `[project.scripts]` — not `generate_imports`.)
 
 ## Module layout
 
@@ -25,6 +27,8 @@ Generates Terraform `import {}` blocks from a binary `.plan` file — no `terraf
 - Unknown/computed values decode as `msgpack.ExtType(code=0)` — use `msgpack.ExtType`, not `msgpack.Ext`.
 - ID derivation has three layers: formula (`_ID_FORMULAS` in `ids.py`), cross-plan resolver (`_CROSS_PLAN_RESOLVERS` in `resolvers.py` — derives an ID from a referenced sibling resource in the same plan), and live resolver (`_RESOLVERS` — `az` CLI). See `docs/resolvers.md`.
 - Resources with complete IDs emit without prompting. Only unresolvable IDs trigger a prompt.
+- `--out FILE` splits output: resolved blocks → `FILE`, unresolved (placeholder/unsupported) → `FILE.unresolved` (a non-`.tf` sidecar Terraform ignores). Re-running converges — resolved blocks already in `FILE` are kept and skipped (no re-resolve). See `docs/usage.md`.
+- In `cli.py`, `changes` is the full CREATE set (the pool for cross-plan sibling lookup + subscription-id detection); `targets` is the filtered emit list (`--skip-imported`/`--target`). Resolvers always receive `changes`, never `targets` — so a `--target`ed resource can still resolve its ID from a sibling that isn't itself targeted.
 - `tfconfig/` HCL is parsed with `python-hcl2` to show the HCL expression chain when an attribute is computed, and to resolve the per-resource subscription ID via the provider chain (`get_subscription_id_for_resource`). A plan can span multiple subscriptions — never assume one global subscription ID.
 
 ## Known pitfalls

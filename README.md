@@ -35,13 +35,17 @@ generate-imports-from-plan terraform.plan
 # 1. Generate plan
 terraform plan -out terraform.plan
 
-# 2. Generate import blocks interactively
-generate-imports-from-plan terraform.plan > imports.tf
+# 2. Generate import blocks. --out splits resolved blocks (imports.tf) from
+#    unresolved ones (imports.tf.unresolved); re-running converges.
+generate-imports-from-plan terraform.plan --out imports.tf
 
-# 3. Fill in any remaining placeholder IDs, then re-plan and apply
+# 3. Fill in any placeholders from imports.tf.unresolved, move them into
+#    imports.tf, then re-plan and apply
 terraform plan -out terraform.plan
 terraform apply terraform.plan
 ```
+
+Without `--out`, import blocks go to stdout (pipe with `> imports.tf`); unresolved ones are emitted as commented blocks.
 
 ## Interactive flow
 
@@ -50,10 +54,10 @@ The tool prompts per resource based on what it can derive:
 - **Complete formula-based ID** — emitted immediately, no prompt.
 - **Cross-plan ID** (depends on another resource in the plan) — resolved and emitted automatically, no prompt.
 - **Entra ID resource or Azure role assignment** — shows the `az` command it will run and asks confirmation.
-- **Unresolvable ID** — shows which attribute is computed and its HCL reference chain; asks whether to skip.
+- **Unresolvable ID** — shows which attribute is computed and its HCL reference chain; emitted to the unresolved sink (sidecar with `--out`, commented block otherwise).
 - **Unsupported import** (e.g. `azuread_application_password`) — emits a comment block.
 
-Use `--yes` to accept all without prompting, `--no` for a dry run.
+Use `--auto-resolve` for a fully autonomous run (runs every `az` lookup without asking), or `--dry-run` to skip `az` calls and resolve deterministically (formula + cross-plan) only.
 
 ## Output
 
@@ -76,13 +80,13 @@ import {
 
 | Flag | Description |
 |---|---|
-| `--yes` | Accept all without prompting |
-| `--no` | Reject all without prompting (dry-run) |
-| `--no-resolve` | Skip Azure CLI lookups; use formula-based IDs only |
+| `--out FILE` | Write resolved blocks to `FILE`, unresolved to `FILE.unresolved`; re-running converges |
+| `--auto-resolve` | Run every Azure CLI resolve automatically, without prompting |
+| `--dry-run` | Skip Azure CLI calls; resolve with formula + cross-plan only (no prompts) |
 | `--skip-imported` | Skip resources that already have an `import {}` block in the config |
 | `--list` | Print `address\tid` pairs instead of HCL blocks |
 | `--list --powershell` | Output a PowerShell array literal of resource addresses |
-| `--target ADDR [ADDR ...]` | Only process the specified resource addresses |
+| `--target ADDR [ADDR ...]` | Only emit the specified addresses (other plan resources stay available as cross-plan resolution context) |
 | `--debug` | Dump all decoded attributes per resource |
 
 ## Adding a resource type
