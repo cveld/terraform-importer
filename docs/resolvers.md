@@ -74,8 +74,9 @@ ARM IDs embed a subscription ID. A plan can span **multiple** subscriptions — 
 2. Walk up the module hierarchy from the resource's module:
    - If the current module defines that provider's `subscription_id`, resolve it. A literal is used directly; a `var.x` reference is traced up through the module input assignments to its literal value.
    - Otherwise consult the parent `module "..."` call: a `providers = { azurerm = azurerm.connectivity }` mapping switches the alias being followed; the default `azurerm` is inherited implicitly.
+3. If the HCL resolution yields nothing (e.g. the provider's `subscription_id` is a root `var.x` without a default, or a complex expression), fall back to **tfstate**: `_subscription_ids_from_tfstate` builds a provider-alias → subscription-id map by scanning the subscription GUID embedded in the IDs of existing resources of the same provider alias (`lru_cache`d per plan).
 
-This lives in `config.py` (`get_subscription_id_for_resource`). tfconfig directories are named `m-` + the dot-joined module call names (matching `tfconfig/modules.json`); the root module is `m-`. If resolution fails, the tool falls back to scanning resource attributes for any subscription GUID, then to the `<subscription-id>` placeholder.
+This lives in `config.py` (`get_subscription_id_for_resource`). tfconfig directories are named `m-` + the dot-joined module call names (matching `tfconfig/modules.json`); the root module is `m-`. If everything fails, the caller (`cli.py`) falls back to scanning resource attributes for any subscription GUID (`collect_subscription_id`), then to the `<subscription-id>` placeholder.
 
 ## Unsupported imports
 
