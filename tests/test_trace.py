@@ -10,7 +10,7 @@ mirror the real shape of the integration plan:
 """
 from __future__ import annotations
 
-from generate_imports.config import _module_context, _split_ref, trace_reference
+from generate_imports.config import _module_context, _ref_tokens, _split_ref, trace_reference
 
 
 def _infra_kv_reader(names):
@@ -67,6 +67,29 @@ def test_trace_module_output_without_instance_key():
         return []
     target = trace_reference(reader, [("root", None)], _split_ref("module.child.out.id"))
     assert target == ([("root", None), ("child", None)], "azurerm_resource_group", "rg")
+
+
+def test_ref_tokens_clean_refs():
+    assert _ref_tokens("var.x") == ["var", "x"]
+    assert _ref_tokens("module.kv.core.vault.id") == ["module", "kv", "core", "vault", "id"]
+    assert _ref_tokens("azurerm_key_vault.kv.id") == ["azurerm_key_vault", "kv", "id"]
+
+
+def test_ref_tokens_extracts_from_function_call():
+    # merge() wrapping a resource ref and a data ref -> pick the resource ref
+    expr = "merge(azurerm_resource_group.groups, data.azurerm_resource_group.existing)"
+    assert _ref_tokens(expr) == ["azurerm_resource_group", "groups"]
+
+
+def test_trace_through_function_wrapped_output():
+    def reader(names):
+        if tuple(names) == ("root", "rg"):
+            return [{"output": [{"groups": {
+                "value": "${merge(azurerm_resource_group.groups, data.azurerm_resource_group.existing)}"}}]}]
+        return []
+    target = trace_reference(reader, [("root", None)],
+                             _ref_tokens("module.rg.groups.core.id"))
+    assert target == ([("root", None), ("rg", None)], "azurerm_resource_group", "groups")
 
 
 def test_trace_unresolvable_returns_none():

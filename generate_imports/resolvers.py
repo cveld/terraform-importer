@@ -119,47 +119,162 @@ def _resolver_azurerm_role_assignment(
     a: dict, address: str | None = None, changes: list | None = None,
     plan_file: str | None = None,
 ) -> ResolverResult:
-    # `scope` is often computed (references a sibling resource in the plan, e.g.
-    # azurerm_app_configuration.conf[each.key].id). Resolve it cross-plan first
-    # so the live lookup below has a concrete --scope.
     scope = a.get("scope")
-    if scope is UNKNOWN or scope in (None, ""):
+    scope = None if scope is UNKNOWN or scope in (None, "") else scope
+    principal = a.get("principal_id")
+    principal = None if principal is UNKNOWN or principal in (None, "") else principal
+    uai_arm_id: str | None = None
+
+    # 1. Direct same-attribute scope reference (e.g. azurerm_app_configuration.conf.id).
+    if scope is None and changes is not None:
         scope = _resolve_scope_from_plan(address, changes, plan_file)
 
-    missing_base: list[str] = []
-    if not scope or scope is UNKNOWN:
-        missing_base.append("scope (computed — references another resource)")
-    v_p, missing_p = _require(a, "principal_id")
-    missing_base += missing_p
-    if missing_base:
-        return None, missing_base
+    # 2. for_each over a role_assignments-style structure: derive scope and the
+    #    principal's managed identity from that data structure.
+    if (scope is None or principal is None) and changes is not None and plan_file:
+        each = _resolve_ra_each(address, changes, plan_file)
+        if each:
+            scope = scope or each.get("scope")
+            if principal is None:
+                uai_arm_id = each.get("uai_arm_id")
 
-    principal = v_p["principal_id"]
+    missing: list[str] = []
+    if not scope:
+        missing.append("scope (computed — references another resource)")
+    if not principal and not uai_arm_id:
+        missing.append("principal_id (computed — references another resource)")
+    if missing:
+        return None, missing
 
-    # Use --assignee-object-id (not --assignee): it bypasses the Microsoft Graph
-    # lookup, which fails for managed identities / SPs the caller can't read in
-    # Graph. The role is filtered client-side via JMESPath on the returned list.
-    v_id, missing_id = _require(a, "role_definition_id")
-    if not missing_id:
-        role_def_id = v_id["role_definition_id"]
+    # Role filter. Use --assignee-object-id (not --assignee): it bypasses the
+    # Microsoft Graph lookup that fails for managed identities / SPs the caller
+    # can't read in Graph. The role is filtered client-side via JMESPath.
+    role_def_id = a.get("role_definition_id")
+    role_def_id = None if role_def_id is UNKNOWN else role_def_id
+    role_name = a.get("role_definition_name")
+    role_name = None if role_name is UNKNOWN else role_name
+    if role_def_id:
         query = f"[?roleDefinitionId=='{role_def_id}'].id | [0]"
+    elif role_name:
+        query = f"[?roleDefinitionName=='{role_name}'].id | [0]"
     else:
-        v_nm, missing_nm = _require(a, "role_definition_name")
-        if missing_nm:
-            return None, [*missing_id, *missing_nm]
-        query = f"[?roleDefinitionName=='{v_nm['role_definition_name']}'].id | [0]"
+        return None, ["role_definition_id (computed — references another resource)"]
 
+    pid_desc = principal if principal else f"<principalId of {uai_arm_id}>"
     desc = (f"az role assignment list --scope {scope!r} "
-            f"--assignee-object-id {principal!r} --query {query!r} -o tsv")
+            f"--assignee-object-id {pid_desc!r} --query {query!r} -o tsv")
+
     def execute() -> tuple[str, str]:
-        return _az(
-            "role", "assignment", "list",
-            "--scope", scope,
-            "--assignee-object-id", principal,
-            "--query", query,
-            "-o", "tsv",
-        )
+        pid = principal
+        if not pid:
+            # Managed-identity principal id isn't in the plan — fetch it live.
+            pid, err = _az("identity", "show", "--ids", uai_arm_id,
+                           "--query", "principalId", "-o", "tsv")
+            if not pid:
+                return "", err or "could not resolve principal_id from managed identity"
+        return _az("role", "assignment", "list", "--scope", scope,
+                   "--assignee-object-id", pid, "--query", query, "-o", "tsv")
     return (desc, execute), []
+
+
+def _ra_source_ref(for_each_expr: str | None) -> str | None:
+    """Extract the var/local a for_each iterates over (first `in var/local.x`)."""
+    m = re.search(r"\bin\s+((?:var|local)\.[A-Za-z_]\w*)", for_each_expr or "")
+    return m.group(1) if m else None
+
+
+def _decompose_role_assignments(ra_map, instance_key: str):
+    """Find (object_id_expr, scope_expr) for `instance_key` in a role_assignments map.
+
+    The instance key mirrors the module's:
+        replace(principal," ","-")-replace(role," ","-")-scope_key
+    """
+    from .config import _expr_str
+    if not isinstance(ra_map, dict):
+        return None
+
+    def unwrap(v):
+        return v[0] if isinstance(v, list) and len(v) == 1 else v
+
+    def field(d, name):
+        return unwrap(d.get(name, d.get(f'"{name}"')))
+
+    for pkey, pobj in ra_map.items():
+        pobj = unwrap(pobj)
+        if not isinstance(pobj, dict):
+            continue
+        pkey_n = pkey.strip('"').replace(" ", "-")
+        roles = field(pobj, "roles")
+        if not isinstance(roles, dict):
+            continue
+        for rkey, robj in roles.items():
+            robj = unwrap(robj)
+            if not isinstance(robj, dict):
+                continue
+            rkey_n = rkey.strip('"').replace(" ", "-")
+            scopes = field(robj, "scopes")
+            if not isinstance(scopes, dict):
+                continue
+            for skey, sexpr in scopes.items():
+                skey_n = skey.strip('"')
+                if f"{pkey_n}-{rkey_n}-{skey_n}" == instance_key:
+                    return _expr_str(field(pobj, "object_id")), _expr_str(unwrap(sexpr))
+    return None
+
+
+def _resolve_ra_each(address: str, changes: list, plan_file: str):
+    """Resolve scope + principal identity for a role assignment whose attributes
+    come from `each.value` over a role_assignments-style structure.
+
+    Returns {'scope': str|None, 'uai_arm_id': str|None} or None if not applicable.
+    """
+    from .config import (_module_context, _read_module_hcl, _split_ref, _tfdir,
+                         get_attr_expr, resolve_value, trace_reference)
+    from .ids import build_id
+
+    own_rtype = _rtype_from_addr(address)
+    res = get_attr_expr(plan_file, address, own_rtype, _resource_name(address), "scope")
+    if not res:
+        return None
+    scope_expr, for_each = res
+    if "each." not in scope_expr:
+        return None
+    src = _ra_source_ref(for_each)
+    inst_key = _for_each_key(address)
+    if not src or inst_key is None:
+        return None
+
+    reader = lambda names: _read_module_hcl(plan_file, _tfdir(names))  # noqa: E731
+    rv = resolve_value(reader, _module_context(address), _split_ref(src))
+    if not rv:
+        return None
+    ra_map, ctx = rv
+    dec = _decompose_role_assignments(ra_map, inst_key)
+    if not dec:
+        return None
+    oid_expr, scope_ref = dec
+
+    result = {"scope": None, "uai_arm_id": None}
+
+    starget = trace_reference(reader, ctx, _split_ref(scope_ref))
+    if starget:
+        sc = _match_target_change(changes, starget)
+        if sc is not None:
+            sub = _resolve_sub_id(changes, sc.address, plan_file, _rtype_from_addr(sc.address))
+            sid, _ = build_id(sc, sub)
+            if sid and "<" not in sid:
+                result["scope"] = sid
+
+    ptarget = trace_reference(reader, ctx, _split_ref(oid_expr))
+    if ptarget and ptarget[1] == "azurerm_user_assigned_identity":
+        uai = _match_target_change(changes, ptarget)
+        if uai is not None:
+            sub = _resolve_sub_id(changes, uai.address, plan_file, "azurerm_user_assigned_identity")
+            uid, _ = build_id(uai, sub)
+            if uid and "<" not in uid:
+                result["uai_arm_id"] = uid
+
+    return result
 
 
 # ---------------------------------------------------------------------------

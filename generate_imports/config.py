@@ -372,6 +372,27 @@ def _split_ref(expr: str) -> list[str]:
     return [t for t in s.split(".") if t]
 
 
+_REF_PREFIXES = ("var", "local", "module")
+
+
+def _ref_tokens(expr: str) -> list[str]:
+    """Tokenise a reference, looking through function calls / complex expressions.
+
+    A clean reference (`var.x`, `module.m.out`, `azurerm_x.y`) tokenises directly.
+    Otherwise (e.g. `merge(azurerm_resource_group.groups, data.azurerm_x.ex)`),
+    extract the first concrete resource reference — a `type.name` with an
+    underscore in the type, not prefixed by `data.`/another segment.
+    """
+    toks = _split_ref(expr)
+    if toks and (toks[0] in _REF_PREFIXES
+                 or (re.fullmatch(r"[a-z][a-z0-9_]*", toks[0]) and "_" in toks[0])):
+        return toks
+    m = re.search(r"(?<![\w.])([a-z][a-z0-9]*(?:_[a-z0-9]+)+)\.([A-Za-z_]\w*)", expr)
+    if m:
+        return [m.group(1), m.group(2)]
+    return toks
+
+
 def _index_into(val: object, path: list[str]) -> tuple[str, list[str]]:
     """Descend a parsed HCL object along `path` field names.
 
@@ -446,7 +467,7 @@ def trace_reference(read_module, context, tokens, depth: int = 0):
         if raw is None:
             return None
         expr2, rest2 = _index_into(raw, rest)
-        return trace_reference(read_module, parent, _split_ref(expr2) + rest2, depth + 1)
+        return trace_reference(read_module, parent, _ref_tokens(expr2) + rest2, depth + 1)
 
     if head == "local":
         if len(tokens) < 2:
@@ -456,7 +477,7 @@ def trace_reference(read_module, context, tokens, depth: int = 0):
         if raw is None:
             return None
         expr2, rest2 = _index_into(raw, rest)
-        return trace_reference(read_module, context, _split_ref(expr2) + rest2, depth + 1)
+        return trace_reference(read_module, context, _ref_tokens(expr2) + rest2, depth + 1)
 
     if head == "module":
         if len(tokens) < 3:
@@ -475,7 +496,7 @@ def trace_reference(read_module, context, tokens, depth: int = 0):
             return None
         expr2, rest2 = _index_into(raw, rest)
         return trace_reference(read_module, context + [(mod_name, key)],
-                               _split_ref(expr2) + rest2, depth + 1)
+                               _ref_tokens(expr2) + rest2, depth + 1)
 
     # Resource reference: <type>.<name>[...]
     if len(tokens) >= 2:
@@ -494,4 +515,61 @@ def trace_attr_to_resource(plan_file: str, address: str, resource_type: str,
         return None
     expr, _ = result
     reader = lambda names: _read_module_hcl(plan_file, _tfdir(names))  # noqa: E731
-    return trace_reference(reader, _module_context(address), _split_ref(expr))
+    return trace_reference(reader, _module_context(address), _ref_tokens(expr))
+
+
+def resolve_value(read_module, context, tokens, depth: int = 0):
+    """Resolve a var/local reference to its parsed HCL *value* (e.g. a map).
+
+    Unlike trace_reference (which finds a target resource), this returns the
+    data the reference points at, paired with the module context in which that
+    data's expressions are written — so callers can trace those further.
+
+    Returns (value, defining_context) or None.
+    """
+    if depth > 32 or not tokens:
+        return None
+    head = tokens[0]
+    if head == "var":
+        if len(tokens) < 2 or not context:
+            return None
+        name, rest = tokens[1], tokens[2:]
+        parent = context[:-1]
+        raw = _find_module_input_raw(read_module([n for n, _ in parent]), context[-1][0], name)
+        if raw is None:
+            return None
+        return _value_from_raw(read_module, parent, raw, rest, depth)
+    if head == "local":
+        if len(tokens) < 2:
+            return None
+        name, rest = tokens[1], tokens[2:]
+        raw = _find_local_raw(read_module([n for n, _ in context]), name)
+        if raw is None:
+            return None
+        return _value_from_raw(read_module, context, raw, rest, depth)
+    return None
+
+
+def _value_from_raw(read_module, ctx, raw, rest, depth):
+    if isinstance(raw, list) and len(raw) == 1:
+        raw = raw[0]
+    if isinstance(raw, str):
+        toks = _split_ref(raw)
+        if toks and toks[0] in ("var", "local"):
+            return resolve_value(read_module, ctx, toks + rest, depth + 1)
+        return (raw, ctx)  # a literal or other expression string
+    # structured value (dict/list): descend the remaining field path
+    val = raw
+    for field in rest:
+        if isinstance(val, list) and len(val) == 1:
+            val = val[0]
+        if isinstance(val, dict):
+            if field in val:
+                val = val[field]
+            elif f'"{field}"' in val:
+                val = val[f'"{field}"']
+            else:
+                return None
+        else:
+            return None
+    return (val, ctx)

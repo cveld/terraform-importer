@@ -53,7 +53,18 @@ var.vault.id → local.keyvault_secrets_obj.id → module.kv.core.vault.id
             → module.kv["core"].azurerm_key_vault.keyvault
 ```
 
-`trace_reference` takes an injectable module reader (zip-backed in production, dict-backed in tests). `_match_target_change` then links the traced target — module path with instance keys + type + name — to a plan change.
+`trace_reference` takes an injectable module reader (zip-backed in production, dict-backed in tests). `_match_target_change` then links the traced target — module path with instance keys + type + name — to a plan change. `_ref_tokens` lets the tracer see through function-wrapped references (e.g. `merge(azurerm_resource_group.groups, data...)`) by extracting the first concrete resource reference.
+
+### Role assignments over a `for_each` data structure
+
+`azurerm_role_assignment` resources are often generated with `for_each` over a `role_assignments`-style variable, so `scope` and `principal_id` are `each.value.*` rather than direct references. `_resolve_ra_each` handles this:
+
+1. Read the `for_each` expression, find the source `var`/`local`, and resolve it to the map with `config.resolve_value`.
+2. Reconstruct each generated key (`replace(principal," ","-")-replace(role," ","-")-scope_key`) to find the entry matching this instance, yielding its `scope` and `object_id` expressions.
+3. Trace the `scope` expression to a resource → build its ARM id (the `--scope`).
+4. If `principal_id` is computed and `object_id` traces to a managed identity being created, resolve the identity's `principalId` live via `az identity show` (cached, so identities shared across many assignments are looked up once). When `principal_id` is already concrete in the plan (e.g. from a data source), it is used directly.
+
+The role assignment name (a GUID) is then looked up with `az role assignment list --scope … --assignee-object-id … --query "[?roleDefinitionName=='…'].id"`.
 
 ## Subscription ID resolution
 
