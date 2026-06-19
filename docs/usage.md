@@ -37,7 +37,7 @@ uv run generate-imports-from-plan terraform.plan > imports.tf
 
 ### Resolve cache
 
-Successful `az` lookups are cached in `<plan>.resolve-cache.json` (next to the plan file), keyed by the exact `az` command. Re-runs reuse cached results instead of calling Azure again — useful because the same lookup (e.g. a managed identity's principal ID) is often needed by several resources. Delete the file or pass `--no-cache` to force fresh lookups. The cache only stores successful, non-empty results.
+Successful `az` lookups are cached, keyed by the exact `az` command. With `--out imports.tf` the cache is `imports.tf.cache`; without `--out` it falls back to `<plan>.resolve-cache.json`. Re-runs reuse cached results instead of calling Azure again — useful because the same lookup (e.g. a managed identity's principal ID) is often needed by several resources. Delete the file or pass `--no-cache` to force fresh lookups. The cache only stores successful, non-empty results.
 
 ### Resolve modes
 

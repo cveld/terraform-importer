@@ -153,10 +153,15 @@ def main() -> None:
                          "(no prompts). Output files are still written.")
     args = ap.parse_args()
 
-    cache = ResolveCache(
-        None if args.no_cache else f"{args.plan_file}.resolve-cache.json",
-        enabled=not args.no_cache,
-    )
+    # Cache next to the output file (imports.tf.cache) when --out is given, so it
+    # sits with the other artifacts; otherwise fall back to next to the plan.
+    if args.no_cache:
+        cache_path = None
+    elif args.out:
+        cache_path = f"{args.out}.cache"
+    else:
+        cache_path = f"{args.plan_file}.resolve-cache.json"
+    cache = ResolveCache(cache_path, enabled=not args.no_cache)
     set_cache(cache)
 
     data    = read_tfplan_bytes(args.plan_file)
