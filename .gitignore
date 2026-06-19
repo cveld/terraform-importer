@@ -430,3 +430,6 @@ FodyWeavers.xsd
 
 # Claude
 claude.local.md
+
+# terraform-importer az-lookup cache (generated next to .plan files)
+*.resolve-cache.json

@@ -23,6 +23,7 @@ Generates Terraform `import {}` blocks from a binary `.plan` file — no `terraf
 | `config.py` | parse `tfconfig/` HCL (via python-hcl2): attribute chains + per-resource subscription ID via the provider chain |
 | `cty.py` | decode cty msgpack payloads |
 | `proto.py` | low-level protobuf field iterator |
+| `cache.py` | persistent read-through cache for `az` lookups (`<plan>.resolve-cache.json`) |
 
 ## Key design decisions
 

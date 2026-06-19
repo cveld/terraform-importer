@@ -33,6 +33,11 @@ uv run generate-imports-from-plan terraform.plan > imports.tf
 | `--list --powershell` | Output a PowerShell array literal of resource addresses |
 | `--target ADDR …` | Only emit the specified resource addresses. Other resources in the plan remain available as cross-plan resolution context (siblings, subscription ID), so a targeted resource still resolves correctly. |
 | `--debug` | Dump all decoded attributes per resource |
+| `--no-cache` | Disable the persistent `az`-lookup cache |
+
+### Resolve cache
+
+Successful `az` lookups are cached in `<plan>.resolve-cache.json` (next to the plan file), keyed by the exact `az` command. Re-runs reuse cached results instead of calling Azure again — useful because the same lookup (e.g. a managed identity's principal ID) is often needed by several resources. Delete the file or pass `--no-cache` to force fresh lookups. The cache only stores successful, non-empty results.
 
 ### Resolve modes
 

@@ -5,11 +5,12 @@ import re
 import sys
 from pathlib import Path
 
+from .cache import ResolveCache
 from .cty import UNKNOWN
 from .config import get_attr_expr, get_subscription_id_for_resource
 from .ids import build_id, collect_subscription_id, resource_type, IMPORT_UNSUPPORTED
 from .plan import Action, parse_plan, read_tfplan_bytes
-from .resolvers import get_resolver, has_resolver, resolve_cross_plan
+from .resolvers import get_resolver, has_resolver, resolve_cross_plan, set_cache
 
 
 def _ask(prompt: str, choices: list[str]) -> str:
@@ -141,6 +142,9 @@ def main() -> None:
                     help="With --list: output a PowerShell array literal of addresses")
     ap.add_argument("--debug", action="store_true",
                     help="Dump decoded attributes for each CREATE resource")
+    ap.add_argument("--no-cache", action="store_true",
+                    help="Disable the persistent az-lookup cache "
+                         "(<plan>.resolve-cache.json)")
     resolve_group = ap.add_mutually_exclusive_group()
     resolve_group.add_argument("--auto-resolve", action="store_true",
                     help="Run every Azure CLI resolve automatically, without prompting")
@@ -148,6 +152,12 @@ def main() -> None:
                     help="Skip Azure CLI calls; resolve with formula + cross-plan only "
                          "(no prompts). Output files are still written.")
     args = ap.parse_args()
+
+    cache = ResolveCache(
+        None if args.no_cache else f"{args.plan_file}.resolve-cache.json",
+        enabled=not args.no_cache,
+    )
+    set_cache(cache)
 
     data    = read_tfplan_bytes(args.plan_file)
     changes = parse_plan(data)
@@ -305,6 +315,8 @@ def main() -> None:
 
     except KeyboardInterrupt:
         print("\nAborted.", file=sys.stderr)
+    finally:
+        cache.save()
 
     # ---- flush output -----------------------------------------------------
     if file_mode:

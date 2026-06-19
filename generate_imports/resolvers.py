@@ -10,20 +10,37 @@ Resolver = tuple[str, Callable[[], tuple[str, str]]]  # (description, executor)
 ResolverResult = tuple[Resolver | None, list[str]]    # (resolver_or_None, missing_attrs)
 
 
+_CACHE = None  # set by cli via set_cache(); a ResolveCache or None
+
+
+def set_cache(cache) -> None:
+    """Install a read-through ResolveCache for `az` lookups (called by cli)."""
+    global _CACHE
+    _CACHE = cache
+
+
 def _az(*args: str) -> tuple[str, str]:
-    """Run az CLI. Returns (stdout, stderr)."""
+    """Run az CLI. Returns (stdout, stderr). Successful results are cached."""
     import sys
+    key = "az " + " ".join(args)
+    if _CACHE is not None:
+        cached = _CACHE.get(key)
+        if cached is not None:
+            return cached, ""
     try:
         r = subprocess.run(
             ["az", *args],
             capture_output=True, text=True, check=True,
             shell=(sys.platform == "win32"),
         )
-        return r.stdout.strip(), ""
+        out = r.stdout.strip()
     except subprocess.CalledProcessError as e:
         return "", e.stderr.strip()
     except FileNotFoundError:
         return "", "az CLI not found"
+    if _CACHE is not None and out:
+        _CACHE.set(key, out)
+    return out, ""
 
 
 def _require(attrs: dict, *keys: str) -> tuple[dict[str, str], list[str]]:
