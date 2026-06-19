@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import re
 import zipfile
+from functools import lru_cache
 
 import hcl2
 
@@ -228,6 +230,41 @@ def _resolve_variable(
     return None
 
 
+@lru_cache(maxsize=None)
+def _subscription_ids_from_tfstate(plan_file: str) -> dict[str, str]:
+    """Build a provider-alias → subscription_id map from existing tfstate resources.
+
+    Used as a fallback when the provider's subscription_id is a variable without
+    a default — the variable value is not captured in tfconfig HCL but IS reflected
+    in the IDs of existing resources in tfstate.
+    """
+    result: dict[str, str] = {}
+    try:
+        with zipfile.ZipFile(plan_file) as zf:
+            if "tfstate" not in zf.namelist():
+                return result
+            text = zf.read("tfstate").decode(errors="replace")
+            state = json.loads(text)
+            for resource in state.get("resources", []):
+                provider = resource.get("provider", "")
+                m = re.search(r'hashicorp/azurerm"\]\.?(.*)$', provider)
+                if not m:
+                    continue
+                alias = m.group(1)
+                key = f"azurerm.{alias}" if alias else "azurerm"
+                if key in result:
+                    continue
+                for instance in resource.get("instances", []):
+                    rid = instance.get("attributes", {}).get("id", "")
+                    sub_m = re.search(r"/subscriptions/([0-9a-f-]{36})/", rid)
+                    if sub_m:
+                        result[key] = sub_m.group(1)
+                        break
+    except Exception:
+        pass
+    return result
+
+
 def get_subscription_id_for_resource(
     plan_file: str,
     address: str,
@@ -239,6 +276,8 @@ def get_subscription_id_for_resource(
     Reads provider blocks and module `providers = {}` mappings from the plan's
     tfconfig, following the provider alias chain from the resource's module up to
     the root, then resolving any `var.x` reference via module input assignments.
+    Falls back to scanning existing resources in tfstate for the same provider alias
+    when the HCL-based resolution fails (e.g. a root variable without a default).
 
     Algorithm:
     1. Find which provider alias the resource uses (or 'azurerm' by default).
@@ -248,6 +287,7 @@ def get_subscription_id_for_resource(
        b. Otherwise consult the parent module call: if it remaps our provider key via
           `providers = {}`, switch to the mapped alias; the default `azurerm` is
           inherited implicitly. Continue one level up.
+    3. If HCL resolution yields nothing, look up provider_key in the tfstate map.
     """
     try:
         names = _module_names(address)
@@ -265,11 +305,14 @@ def get_subscription_id_for_resource(
                 if kind == "literal":
                     return val
                 if kind == "var":
-                    return _resolve_variable(plan_file, names, val)
-                return None  # complex expression — cannot resolve statically
+                    resolved = _resolve_variable(plan_file, names, val)
+                    if resolved is not None:
+                        return resolved
+                    break  # var unresolvable — fall through to tfstate
+                break  # complex expression — fall through to tfstate
 
             if not names:
-                return None  # reached root without finding the provider
+                break  # reached root — fall through to tfstate
 
             parent = names[:-1]
             child = names[-1]
@@ -279,6 +322,10 @@ def get_subscription_id_for_resource(
                 provider_key = remapped
             # else: default provider inherited implicitly — keep provider_key
             names = parent
+
+        # Fallback: derive subscription_id from existing resources in tfstate
+        tfstate_map = _subscription_ids_from_tfstate(plan_file)
+        return tfstate_map.get(provider_key)
 
     except Exception:
         pass
