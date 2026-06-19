@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.4.0](https://github.com/cveld/terraform-importer/compare/v0.3.1...v0.4.0) (2026-06-19)
+
+
+### Features
+
+* add --out sidecar output, resolve-mode flags, and full-pool --target ([9b1a49e](https://github.com/cveld/terraform-importer/commit/9b1a49ebf1169bb88ff883cb7527c55740937648))
+* add cross-plan resolver for azurerm_storage_container ([0ee12a7](https://github.com/cveld/terraform-importer/commit/0ee12a7fdd6284b81f0affdfb3d67b554e1bddee))
+* add ID formulas for app configuration, cosmosdb, and dns records ([1fbf1b1](https://github.com/cveld/terraform-importer/commit/1fbf1b1c234b433ac1d197c832da4ce70f7eda59))
+* cache az lookups in a persistent read-through cache ([7d8b63a](https://github.com/cveld/terraform-importer/commit/7d8b63a8ba22fb69c99f3805a3390d53045faed6))
+* fall back to tfstate for subscription-id when root var has no default ([1afdaee](https://github.com/cveld/terraform-importer/commit/1afdaee1db524c526165fe71f481914d6a077526))
+* resolve role assignments built from a for_each role_assignments map ([5118445](https://github.com/cveld/terraform-importer/commit/5118445f410ede8c630e750fda4a81f0c5406cb1))
+* trace cross-module references to resolve key vault id ([cd595a9](https://github.com/cveld/terraform-importer/commit/cd595a9bb13720161a78d03e7c52e65e457c1ee2))
+
+
+### Bug Fixes
+
+* resolve role assignment scope cross-plan and bypass graph lookup ([d7401bc](https://github.com/cveld/terraform-importer/commit/d7401bc82cddc504e9a9eb1249c7b753886595df))
+
+
+### Documentation
+
+* capture tfstate subscription fallback and full resolution layers ([bd72ea6](https://github.com/cveld/terraform-importer/commit/bd72ea6b29bc052b193d8c883763f7333b65f063))
+* describe cross-module reference tracing in resolvers.md ([8d29568](https://github.com/cveld/terraform-importer/commit/8d295689b3395a3d3688737d326b8de84c3396ea))
+
 ## [0.3.1](https://github.com/cveld/terraform-importer/compare/v0.3.0...v0.3.1) (2026-06-11)
 
 
