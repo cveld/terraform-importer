@@ -129,6 +129,28 @@ def test_key_vault_secret_cross_plan(change):
     assert id_ == "https://myvault.vault.azure.net/secrets/mysecret"
 
 
+def test_vm_extension_cross_plan(change):
+    vm = change("module.m.azurerm_linux_virtual_machine.vm",
+                name="vm-01", resource_group_name="rg", subscription_id=SUB)
+    ext = change('module.m.azurerm_virtual_machine_extension.ext["AADLogin"]',
+                 name="AADLoginForLinux", virtual_machine_id=UNKNOWN)
+    id_, missing = resolve_cross_plan("azurerm_virtual_machine_extension",
+                                      ext.after_attrs, ext.address, [vm, ext], "")
+    assert missing == []
+    assert id_ == (f"/subscriptions/{SUB}/resourceGroups/rg/providers"
+                   "/Microsoft.Compute/virtualMachines/vm-01"
+                   "/extensions/AADLoginForLinux")
+
+
+def test_vm_extension_no_sibling(change):
+    ext = change('module.m.azurerm_virtual_machine_extension.ext["x"]',
+                 name="AADLoginForLinux", virtual_machine_id=UNKNOWN)
+    id_, missing = resolve_cross_plan("azurerm_virtual_machine_extension",
+                                      ext.after_attrs, ext.address, [ext], "")
+    assert id_ is None
+    assert missing  # explains why
+
+
 def test_no_cross_plan_resolver_registered(change):
     rc = change("azurerm_resource_group.rg", name="rg")
     id_, missing = resolve_cross_plan("azurerm_resource_group", rc.after_attrs, rc.address, [rc], "")

@@ -106,7 +106,9 @@ def _format_unresolved(items: list[dict], commented: bool) -> str:
     out: list[str] = []
     for it in items:
         if not it["supported"]:
-            out.append(f"# import not supported for {it['rtype']}:\n# {it['address']}")
+            reason = it.get("reason")
+            note = f" ({reason})" if reason else ""
+            out.append(f"# import not supported for {it['rtype']}{note}:\n# {it['address']}")
             continue
         header = f"# unresolved ({it['reason']}):"
         if commented:
@@ -247,7 +249,8 @@ def main() -> None:
 
             if rtype in IMPORT_UNSUPPORTED:
                 unresolved.append({"address": c.address, "rtype": rtype,
-                                   "supported": False})
+                                   "supported": False,
+                                   "reason": IMPORT_UNSUPPORTED[rtype]})
                 continue
 
             # Cross-plan resolution is deterministic (no network) — always apply
