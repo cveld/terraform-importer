@@ -39,6 +39,7 @@ Some resources have a computed ID attribute that references a sibling resource i
 | `azurerm_key_vault_certificate` | `azurerm_key_vault` in same module | Key Vault certificate URL |
 | `azurerm_key_vault_secret` | `azurerm_key_vault` in same module | Key Vault secret URL |
 | `azurerm_storage_container` | `azurerm_storage_account` in same module (via computed `storage_account_id`) | container ARM ID |
+| `azurerm_virtual_machine_extension` | `azurerm_{linux,windows,}_virtual_machine` in same module (via computed `virtual_machine_id`) | `{vm_id}/extensions/{name}` |
 
 Cross-plan resolvers are pure (no network), so the tool applies their result **automatically without prompting** — like a formula. They are attempted before live resolvers. If the sibling resource is not found in the plan, or if multiple siblings exist and the for_each key does not disambiguate, the resolver returns a `missing_attrs` description and the tool falls through to the normal placeholder prompt (which then shows that reason).
 
@@ -80,9 +81,11 @@ This lives in `config.py` (`get_subscription_id_for_resource`). tfconfig directo
 
 ## Unsupported imports
 
-Resource types that the Terraform provider does not support importing are listed in `IMPORT_UNSUPPORTED` in `ids.py`. They emit a comment block instead of an import block.
+Resource types this tool cannot emit an importable ID for are listed in `IMPORT_UNSUPPORTED` in `ids.py` — a dict mapping the resource type to a human-readable reason. They emit a comment block (including the reason) instead of an import block.
 
-Currently: `azuread_application_password`
+Currently:
+- `azuread_application_password` — the azuread provider does not support importing application passwords.
+- `terraform_data` — its ID is generated at create time and cannot be derived from the plan.
 
 ## Adding a new live resolver (az CLI)
 

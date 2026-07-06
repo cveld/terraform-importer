@@ -63,6 +63,8 @@ _ID_FORMULAS: dict[str, Any] = {
         lambda a, _: f"/providers/Microsoft.Management/managementGroups/{_str(a,'name')}",
     "azurerm_subscription":
         lambda a, s: f"/subscriptions/{_str(a,'subscription_id') if a.get('subscription_id') not in (None,UNKNOWN) else s}",
+    "azurerm_resource_provider_registration":
+        lambda a, s: f"/subscriptions/{s}/providers/{_str(a,'name')}",
 
     # Identity
     "azurerm_user_assigned_identity":
@@ -165,6 +167,10 @@ _ID_FORMULAS: dict[str, Any] = {
     "azurerm_cosmosdb_sql_container":
         lambda a, s: _arm(s, _str(a,"resource_group_name"), "Microsoft.DocumentDB/databaseAccounts", _str(a,"account_name"), "sqlDatabases", _str(a,"database_name"), "containers", _str(a,"name")),
 
+    # Compute
+    "azurerm_virtual_machine_extension":
+        lambda a, _: f"{_str(a,'virtual_machine_id')}/extensions/{_str(a,'name')}",
+
     # Container
     "azurerm_container_registry":
         lambda a, s: _arm(s, _str(a,"resource_group_name"), "Microsoft.ContainerRegistry/registries", _str(a,"name")),
@@ -216,10 +222,15 @@ _ID_FORMULAS: dict[str, Any] = {
 }
 # fmt: on
 
-# Resource types for which the Terraform provider does not support importing.
-IMPORT_UNSUPPORTED: frozenset[str] = frozenset({
-    "azuread_application_password",
-})
+# Resource types this tool cannot emit an importable ID for, mapped to the reason.
+# Membership (`rtype in IMPORT_UNSUPPORTED`) tests the keys; the value is a
+# human-readable explanation shown in the unresolved output.
+IMPORT_UNSUPPORTED: dict[str, str] = {
+    "azuread_application_password":
+        "the azuread provider does not support importing application passwords",
+    "terraform_data":
+        "its ID is generated at create time and cannot be derived from the plan",
+}
 
 
 def resource_type(address: str) -> str:

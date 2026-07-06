@@ -646,8 +646,57 @@ def _resolver_storage_container(
     return (desc, execute), []
 
 
+# VM types an azurerm_virtual_machine_extension may attach to, tried in order.
+_VM_TYPES = (
+    "azurerm_linux_virtual_machine",
+    "azurerm_windows_virtual_machine",
+    "azurerm_virtual_machine",
+)
+
+
+def _resolver_vm_extension(
+    attrs: dict, address: str, changes: list, plan_file: str,
+) -> ResolverResult:
+    """Resolve azurerm_virtual_machine_extension when it references its VM by the
+    computed `virtual_machine_id` (id of a VM resource in the same plan)."""
+    _, missing = _require(attrs, "virtual_machine_id")
+    if not missing:
+        return None, []  # known id — the formula handles it
+
+    ext_name = attrs.get("name")
+    if not ext_name or ext_name is UNKNOWN:
+        return None, ["name (extension name not available in plan)"]
+
+    own_rtype = _rtype_from_addr(address)
+    vm, errors = None, ["no virtual machine found in same module"]
+    for vm_rtype in _VM_TYPES:
+        vm, errors = _find_referenced_resource(
+            changes, address, plan_file, own_rtype, "virtual_machine_id", vm_rtype,
+        )
+        if vm is not None:
+            break
+    if vm is None:
+        return None, [f"virtual_machine_id (computed — {'; '.join(errors)})"]
+
+    vm_name = vm.after_attrs.get("name")
+    vm_rg   = vm.after_attrs.get("resource_group_name")
+    if not vm_name or vm_name is UNKNOWN or not vm_rg or vm_rg is UNKNOWN:
+        return None, ["virtual_machine_id (computed — VM name/resource_group not available in plan)"]
+
+    sub_id    = _resolve_sub_id(changes, address, plan_file, own_rtype)
+    vm_id     = (f"/subscriptions/{sub_id}/resourceGroups/{vm_rg}"
+                 f"/providers/Microsoft.Compute/virtualMachines/{vm_name}")
+    import_id = f"{vm_id}/extensions/{ext_name}"
+
+    desc = f"cross-plan: VM {vm_name!r} in rg {vm_rg!r}"
+    def execute() -> tuple[str, str]:
+        return import_id, ""
+    return (desc, execute), []
+
+
 _CROSS_PLAN_RESOLVERS: dict[str, Callable[[dict, str, list, str], ResolverResult]] = {
     "azurerm_storage_container":                          _resolver_storage_container,
+    "azurerm_virtual_machine_extension":                 _resolver_vm_extension,
     "azurerm_virtual_network_dns_servers":               _resolver_azurerm_virtual_network_dns_servers,
     "azurerm_subnet_route_table_association":             _resolver_subnet_association,
     "azurerm_subnet_network_security_group_association":  _resolver_subnet_association,

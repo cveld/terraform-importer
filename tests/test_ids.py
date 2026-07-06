@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 from generate_imports.cty import UNKNOWN
-from generate_imports.ids import build_id, collect_subscription_id, resource_type
+from generate_imports.ids import (
+    IMPORT_UNSUPPORTED,
+    build_id,
+    collect_subscription_id,
+    resource_type,
+)
 
 SUB = "00000000-0000-0000-0000-000000000000"
 
@@ -42,6 +47,27 @@ def test_dns_a_record(change):
     id_, _ = build_id(rc, SUB)
     assert id_ == (f"/subscriptions/{SUB}/resourceGroups/rg/providers"
                    "/Microsoft.Network/dnsZones/example.com/A/www")
+
+
+def test_resource_provider_registration(change):
+    rc = change("module.m.azurerm_resource_provider_registration.p", name="Microsoft.App")
+    id_, derived = build_id(rc, SUB)
+    assert derived
+    assert id_ == f"/subscriptions/{SUB}/providers/Microsoft.App"
+
+
+def test_virtual_machine_extension_known_vm_id(change):
+    vm_id = (f"/subscriptions/{SUB}/resourceGroups/rg/providers"
+             "/Microsoft.Compute/virtualMachines/myvm")
+    rc = change("azurerm_virtual_machine_extension.ext",
+                name="AADLoginForWindows", virtual_machine_id=vm_id)
+    id_, derived = build_id(rc, SUB)
+    assert derived
+    assert id_ == f"{vm_id}/extensions/AADLoginForWindows"
+
+
+def test_terraform_data_unsupported():
+    assert "terraform_data" in IMPORT_UNSUPPORTED
 
 
 def test_unknown_attr_becomes_placeholder(change):
