@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from generate_imports.cty import UNKNOWN
+import generate_imports.resolvers as R
 from generate_imports.resolvers import (
     _find_sibling,
     _for_each_key,
@@ -13,6 +14,7 @@ from generate_imports.resolvers import (
     _rtype_from_addr,
     get_resolver,
     resolve_cross_plan,
+    resource_exists,
 )
 
 SUB = "11111111-1111-1111-1111-111111111111"
@@ -210,3 +212,49 @@ def test_match_target_change_no_match(change):
     kv = change('module.infra.module.kv["core"].azurerm_key_vault.keyvault', name="v")
     target = ([("infra", None), ("kv", "other")], "azurerm_key_vault", "keyvault")
     assert _match_target_change([kv], target) is None
+
+
+# ---------------------------------------------------------------------------
+# resource_exists — existence verification (--verify-exists)
+# ---------------------------------------------------------------------------
+
+ARM = "/subscriptions/x/resourceGroups/rg/providers/Microsoft.KeyVault/vaults/v"
+
+
+@pytest.mark.parametrize("import_id", ["", "<id>", "<scope>/roleAssignments/<name>"])
+def test_resource_exists_placeholder_is_unknown(import_id):
+    assert resource_exists("azurerm_key_vault", import_id, {}) is None
+
+
+def test_resource_exists_present(monkeypatch):
+    monkeypatch.setattr(R, "_az", lambda *a: (ARM, ""))
+    assert resource_exists("azurerm_key_vault", ARM, {}) is True
+
+
+def test_resource_exists_absent(monkeypatch):
+    monkeypatch.setattr(R, "_az", lambda *a: ("", "(ResourceNotFound) ... was not found"))
+    assert resource_exists("azurerm_key_vault", ARM, {}) is False
+
+
+def test_resource_exists_other_error_is_unknown(monkeypatch):
+    # An auth/transient failure must not be read as "absent".
+    monkeypatch.setattr(R, "_az", lambda *a: ("", "AADSTS700016 authentication failed"))
+    assert resource_exists("azurerm_key_vault", ARM, {}) is None
+
+
+def test_resource_exists_role_assignment_skips_probe(monkeypatch):
+    def boom(*a):
+        raise AssertionError("role_assignment must not be probed")
+    monkeypatch.setattr(R, "_az", boom)
+    assert resource_exists("azurerm_role_assignment",
+                           f"{ARM}/providers/Microsoft.Authorization/roleAssignments/g",
+                           {}) is True
+
+
+def test_resource_exists_uses_type_specific_probe(monkeypatch):
+    calls = []
+    monkeypatch.setattr(R, "_az", lambda *a: (calls.append(a) or ("id", "")))
+    url = "https://v.vault.azure.net/secrets/s"
+    assert resource_exists("azurerm_key_vault_secret", url, {}) is True
+    assert calls[0][:3] == ("keyvault", "secret", "show")
+    assert url in calls[0]

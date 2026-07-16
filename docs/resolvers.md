@@ -65,7 +65,9 @@ var.vault.id → local.keyvault_secrets_obj.id → module.kv.core.vault.id
 3. Trace the `scope` expression to a resource → build its ARM id (the `--scope`).
 4. If `principal_id` is computed and `object_id` traces to a managed identity being created, resolve the identity's `principalId` live via `az identity show` (cached, so identities shared across many assignments are looked up once). When `principal_id` is already concrete in the plan (e.g. from a data source), it is used directly.
 
-The role assignment name (a GUID) is then looked up with `az role assignment list --scope … --assignee-object-id … --query "[?roleDefinitionName=='…'].id"`.
+Besides this `for_each` form, `principal_id` may also be a **direct** reference to a sibling identity, e.g. `principal_id = azurerm_user_assigned_identity.api_management_identity.principal_id`. `_resolve_principal_uai_from_plan` handles that: it reads the `principal_id` HCL expression, matches a same-module `azurerm_user_assigned_identity` by name (or traces it across module boundaries) and — only when the reference genuinely points at an identity — builds the identity's ARM id. The same `az identity show` live tail then fetches its `principalId`. There is no blind sibling fallback for `principal_id`: a wrong principal would produce a wrong import id.
+
+The role assignment name (a GUID) is then looked up with `az role assignment list --scope … --assignee-object-id … --query "[?roleDefinitionName=='…'].id"`. Because the lookup returns empty when the assignment does not exist, a role assignment for an identity that has not been created yet stays unresolved rather than emitting a phantom import.
 
 ## Subscription ID resolution
 
@@ -78,6 +80,27 @@ ARM IDs embed a subscription ID. A plan can span **multiple** subscriptions — 
 3. If the HCL resolution yields nothing (e.g. the provider's `subscription_id` is a root `var.x` without a default, or a complex expression), fall back to **tfstate**: `_subscription_ids_from_tfstate` builds a provider-alias → subscription-id map by scanning the subscription GUID embedded in the IDs of existing resources of the same provider alias (`lru_cache`d per plan).
 
 This lives in `config.py` (`get_subscription_id_for_resource`). tfconfig directories are named `m-` + the dot-joined module call names (matching `tfconfig/modules.json`); the root module is `m-`. If everything fails, the caller (`cli.py`) falls back to scanning resource attributes for any subscription GUID (`collect_subscription_id`), then to the `<subscription-id>` placeholder.
+
+## Existence verification (`--verify-exists`)
+
+An `import {}` block only makes sense for a resource that already exists. In a plan that also *creates* new resources, emitting imports for the new ones makes `terraform apply` fail. With `--verify-exists`, `cli.py` gates every fully-resolved id through `resource_exists(rtype, import_id, attrs)` before writing it:
+
+- **exists** → emit the import block;
+- **absent** → route to `FILE.pending` (id resolved, but nothing to import yet);
+- **unknown** (auth/transient `az` error) → emit anyway, with a warning, so a probe failure never drops an import.
+
+`resource_exists` picks a probe from `_EXISTS_PROBES` by resource type, defaulting to the generic ARM probe `az resource show --ids <id>`. Non-ARM ids use type-specific probes:
+
+| resource type | probe |
+|---|---|
+| *(default — any ARM id)* | `az resource show --ids <id>` |
+| `azurerm_key_vault_secret` | `az keyvault secret show --id <url>` |
+| `azurerm_key_vault_certificate` | `az keyvault certificate show --id <url>` |
+| `azuread_service_principal` | `az ad sp show --id <object-id>` |
+| `azuread_application` | `az ad app show --id <object-id>` |
+| `azurerm_role_assignment` | skipped — already self-verifying (its resolver only returns an id when the assignment exists) |
+
+Probes go through `_az`, so a **positive** result is cached; **negative** results are not cached (the cache only stores non-empty output), so a resource created by a later `apply` is re-probed and picked up on the next run. Absence is distinguished from other failures by scanning stderr for not-found markers (`_is_not_found`); any other error is treated as "unknown", not "absent".
 
 ## Unsupported imports
 

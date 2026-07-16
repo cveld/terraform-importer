@@ -138,6 +138,13 @@ def _resolver_azurerm_role_assignment(
             if principal is None:
                 uai_arm_id = each.get("uai_arm_id")
 
+    # 3. Direct principal_id reference to a sibling user-assigned identity, e.g.
+    #    principal_id = azurerm_user_assigned_identity.X.principal_id. The
+    #    identity's principalId is computed (not in the plan), but its ARM id is
+    #    derivable, so the live tail fetches principalId via `az identity show`.
+    if principal is None and uai_arm_id is None and changes is not None and address:
+        uai_arm_id = _resolve_principal_uai_from_plan(address, changes, plan_file)
+
     missing: list[str] = []
     if not scope:
         missing.append("scope (computed — references another resource)")
@@ -275,6 +282,56 @@ def _resolve_ra_each(address: str, changes: list, plan_file: str):
                 result["uai_arm_id"] = uid
 
     return result
+
+
+def _resolve_principal_uai_from_plan(address, changes, plan_file) -> str | None:
+    """Resolve `principal_id` to a sibling user-assigned identity's ARM id.
+
+    Handles the direct reference form
+    ``principal_id = azurerm_user_assigned_identity.X.principal_id``. Only a
+    reference that genuinely points at an ``azurerm_user_assigned_identity`` is
+    accepted (same-module match, then cross-module trace) — there is no blind
+    sibling fallback, since a wrong principal would build a wrong import id.
+    Returns the identity's ARM id, or None when it cannot be resolved.
+    """
+    if not (plan_file and changes and address):
+        return None
+    from .config import get_attr_expr, trace_attr_to_resource
+    from .ids import build_id
+
+    own_rtype = _rtype_from_addr(address)
+    rname = _resource_name(address)
+    uai_rtype = "azurerm_user_assigned_identity"
+    uai = None
+
+    # Same-module: match the identity name referenced in the HCL expression.
+    result = get_attr_expr(plan_file, address, own_rtype, rname, "principal_id")
+    if result:
+        expr, _ = result
+        prefix = _module_prefix(address)
+        own_key = _for_each_key(address)
+        for ref_name in _ref_names_for_type(expr, uai_rtype):
+            cands = [c for c in changes
+                     if _rtype_from_addr(c.address) == uai_rtype
+                     and _module_prefix(c.address) == prefix
+                     and _resource_name(c.address) == ref_name]
+            if len(cands) > 1 and own_key:
+                cands = [c for c in cands if _for_each_key(c.address) == own_key] or cands
+            if len(cands) == 1:
+                uai = cands[0]
+                break
+
+    # Cross-module: follow var/local/module-output chain to the identity.
+    if uai is None:
+        target = trace_attr_to_resource(plan_file, address, own_rtype, rname, "principal_id")
+        if target and target[1] == uai_rtype:
+            uai = _match_target_change(changes, target)
+
+    if uai is None:
+        return None
+    sub = _resolve_sub_id(changes, uai.address, plan_file, uai_rtype)
+    uid, _ = build_id(uai, sub)
+    return uid if uid and "<" not in uid else None
 
 
 # ---------------------------------------------------------------------------
@@ -772,3 +829,89 @@ def resolve_cross_plan(
 def has_resolver(rtype: str) -> bool:
     """Return True if any resolver (live or cross-plan) is registered for this resource type."""
     return rtype in _RESOLVERS or rtype in _CROSS_PLAN_RESOLVERS
+
+
+# ---------------------------------------------------------------------------
+# Existence verification (--verify-exists)
+# ---------------------------------------------------------------------------
+#
+# An `import {}` block only makes sense for a resource that already exists; a
+# plan that also *creates* new resources would emit imports that make
+# `terraform apply` fail. When enabled, resource_exists() probes Azure for a
+# fully-resolved id. Positive results are cached via `_az`; negatives are not,
+# so a resource created by a later apply is re-probed and picked up next run.
+
+# Substrings that mark an `az` failure as "resource genuinely absent" (vs. an
+# auth/transient error, which must not be mistaken for absence).
+_NOT_FOUND_MARKERS = (
+    "not found", "notfound", "could not be found", "was not found",
+    "does not exist", "resourcenotfound", "no matches",
+)
+
+
+def _is_not_found(err: str) -> bool:
+    e = err.lower()
+    return any(m in e for m in _NOT_FOUND_MARKERS)
+
+
+def _probe_arm(import_id: str, _attrs: dict) -> tuple[str, str]:
+    return _az("resource", "show", "--ids", import_id, "--query", "id", "-o", "tsv")
+
+
+def _probe_kv_secret(import_id: str, _attrs: dict) -> tuple[str, str]:
+    return _az("keyvault", "secret", "show", "--id", import_id, "--query", "id", "-o", "tsv")
+
+
+def _probe_kv_certificate(import_id: str, _attrs: dict) -> tuple[str, str]:
+    return _az("keyvault", "certificate", "show", "--id", import_id, "--query", "id", "-o", "tsv")
+
+
+def _probe_ad_sp(import_id: str, _attrs: dict) -> tuple[str, str]:
+    return _az("ad", "sp", "show", "--id", import_id, "--query", "id", "-o", "tsv")
+
+
+def _probe_ad_app(import_id: str, _attrs: dict) -> tuple[str, str]:
+    oid = import_id.removeprefix("/applications/")
+    return _az("ad", "app", "show", "--id", oid, "--query", "id", "-o", "tsv")
+
+
+def _probe_skip(_import_id: str, _attrs: dict) -> tuple[str, str]:
+    # The resolver already only returns an id when the resource exists
+    # (e.g. azurerm_role_assignment lists the assignment live), so treat it as
+    # present without a second probe.
+    return "ok", ""
+
+
+# resource type -> existence probe. ARM ids use the generic `az resource show`;
+# non-ARM ids (Key Vault data-plane URLs, azuread graph objects) get a
+# type-specific probe.
+_EXISTS_PROBES: dict[str, Callable[[str, dict], tuple[str, str]]] = {
+    "azurerm_role_assignment":       _probe_skip,
+    "azurerm_key_vault_secret":      _probe_kv_secret,
+    "azurerm_key_vault_certificate": _probe_kv_certificate,
+    "azuread_service_principal":     _probe_ad_sp,
+    "azuread_application":           _probe_ad_app,
+}
+
+
+def resource_exists(rtype: str, import_id: str, attrs: dict) -> bool | None:
+    """Probe whether a fully-resolved resource exists in Azure.
+
+    Returns:
+      True   — the resource exists (safe to emit an import block)
+      False  — the resource is genuinely absent (route to `.pending`)
+      None   — could not determine (auth/transient error, or a placeholder id);
+               the caller emits anyway so a probe failure never drops an import.
+    """
+    if not import_id or "<" in import_id:
+        return None
+    probe = _EXISTS_PROBES.get(rtype, _probe_arm)
+    try:
+        out, err = probe(import_id, attrs)
+    except Exception:
+        return None
+    if out:
+        return True
+    if err and not _is_not_found(err):
+        return None  # az errored for a reason other than absence
+    return False

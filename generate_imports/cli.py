@@ -10,7 +10,9 @@ from .cty import UNKNOWN
 from .config import get_attr_expr, get_subscription_id_for_resource
 from .ids import build_id, collect_subscription_id, resource_type, IMPORT_UNSUPPORTED
 from .plan import Action, parse_plan, read_tfplan_bytes
-from .resolvers import get_resolver, has_resolver, resolve_cross_plan, set_cache
+from .resolvers import (
+    get_resolver, has_resolver, resolve_cross_plan, resource_exists, set_cache,
+)
 
 
 def _ask(prompt: str, choices: list[str]) -> str:
@@ -99,6 +101,26 @@ def _read_existing_resolved(path: Path) -> tuple[list[str], set[str]]:
     return blocks, addrs
 
 
+def _format_pending(items: list[dict], commented: bool) -> str:
+    """Format resources with a resolved id that do not exist in Azure yet.
+
+    They must not be imported (apply would create them), so in stdout mode the
+    blocks are fully commented; in a ``.pending`` sidecar (which Terraform
+    ignores) they are live blocks with the reason as a leading comment.
+    """
+    out: list[str] = []
+    for it in items:
+        header = f"# pending ({it['reason']}):"
+        if commented:
+            out.append(
+                f"{header}\n# import {{\n#   to = {it['address']}\n"
+                f'#   id = "{it["id"]}"\n# }}'
+            )
+        else:
+            out.append(f"{header}\n{_import_block(it['address'], it['id'])}")
+    return "\n\n".join(out)
+
+
 def _format_unresolved(items: list[dict], commented: bool) -> str:
     """Format the unresolved list. ``commented`` => fully comment every block
     (stdout mode, safe to mix into a .tf stream); otherwise emit live HCL blocks
@@ -147,6 +169,11 @@ def main() -> None:
     ap.add_argument("--no-cache", action="store_true",
                     help="Disable the persistent az-lookup cache "
                          "(<plan>.resolve-cache.json)")
+    ap.add_argument("--verify-exists", action="store_true",
+                    help="Before emitting a resolved import block, probe Azure to "
+                         "confirm the resource exists. Resources that do not exist "
+                         "yet (will be created by apply) go to FILE.pending instead "
+                         "of getting a spurious import block.")
     resolve_group = ap.add_mutually_exclusive_group()
     resolve_group.add_argument("--auto-resolve", action="store_true",
                     help="Run every Azure CLI resolve automatically, without prompting")
@@ -229,6 +256,24 @@ def main() -> None:
         resolved_out, existing_addrs = _read_existing_resolved(Path(args.out))
 
     unresolved: list[dict] = []
+    pending: list[dict] = []
+
+    def _route_resolved(c, rtype: str, import_id: str, suffix: str = "") -> None:
+        """Append a fully-resolved import block, or route to `pending` when
+        --verify-exists is set and the resource does not exist in Azure yet."""
+        if args.verify_exists:
+            exists = resource_exists(rtype, import_id, c.after_attrs)
+            if exists is False:
+                print(f"  [pending] does not exist yet: {c.address}", file=sys.stderr)
+                pending.append({"address": c.address, "rtype": rtype,
+                                "id": import_id,
+                                "reason": "resource does not exist yet — "
+                                          "will be created by apply"})
+                return
+            if exists is None:
+                print(f"  [verify] existence unknown, emitting: {c.address}",
+                      file=sys.stderr)
+        resolved_out.append(_import_block(c.address, import_id, suffix))
 
     # resolve prompt state: "always" = auto-run every az resolve, None = ask
     import_state: str | None = "always" if args.auto_resolve else None
@@ -259,7 +304,7 @@ def main() -> None:
                 rtype, c.after_attrs, c.address, changes, args.plan_file
             )
             if cp_id:
-                resolved_out.append(_import_block(c.address, cp_id))
+                _route_resolved(c, rtype, cp_id)
                 continue
 
             resolver, missing_attrs = get_resolver(
@@ -319,7 +364,7 @@ def main() -> None:
                                    "supported": True})
             else:
                 suffix = "" if is_derived else "  # TODO: unknown resource type"
-                resolved_out.append(_import_block(c.address, import_id, suffix))
+                _route_resolved(c, rtype, import_id, suffix)
 
     except KeyboardInterrupt:
         print("\nAborted.", file=sys.stderr)
@@ -337,13 +382,24 @@ def main() -> None:
                             encoding="utf-8")
         elif side.exists():
             side.unlink()  # converged: nothing left unresolved
+        pend = Path(f"{args.out}.pending")
+        if pending:
+            pend.write_text(_format_pending(pending, commented=False) + "\n",
+                            encoding="utf-8")
+        elif pend.exists():
+            pend.unlink()  # converged: nothing left pending
         print(f"# {len(resolved_out)} import block(s) -> {out_path}", file=sys.stderr)
         if unresolved:
             print(f"# {len(unresolved)} unresolved -> {side}", file=sys.stderr)
         else:
             print("# No unresolved resources.", file=sys.stderr)
+        if pending:
+            print(f"# {len(pending)} pending (do not exist yet) -> {pend}",
+                  file=sys.stderr)
     else:
         parts = list(resolved_out)
+        if pending:
+            parts.append(_format_pending(pending, commented=True))
         if unresolved:
             parts.append(_format_unresolved(unresolved, commented=True))
         if parts:

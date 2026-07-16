@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from generate_imports.cli import (
+    _format_pending,
     _format_unresolved,
     _import_block,
     _read_existing_resolved,
@@ -60,3 +61,20 @@ def test_format_unresolved_unsupported():
     out = _format_unresolved(items, commented=False)
     assert "# import not supported for azuread_application_password:" in out
     assert "# a.b" in out
+
+
+def test_format_pending_sidecar_emits_live_block():
+    items = [{"address": "a.b", "rtype": "azurerm_x", "id": "/subscriptions/x/foo",
+              "reason": "resource does not exist yet — will be created by apply"}]
+    out = _format_pending(items, commented=False)
+    assert out.startswith("# pending (resource does not exist yet")
+    assert 'id = "/subscriptions/x/foo"' in out
+    assert "#   to" not in out  # live HCL, only the reason line is a comment
+
+
+def test_format_pending_stdout_comments_everything():
+    items = [{"address": "a.b", "rtype": "azurerm_x", "id": "/subscriptions/x/foo",
+              "reason": "nope"}]
+    out = _format_pending(items, commented=True)
+    assert "#   to = a.b" in out
+    assert '#   id = "/subscriptions/x/foo"' in out

@@ -34,6 +34,7 @@ uv run generate-imports-from-plan terraform.plan > imports.tf
 | `--target ADDR …` | Only emit the specified resource addresses. Other resources in the plan remain available as cross-plan resolution context (siblings, subscription ID), so a targeted resource still resolves correctly. |
 | `--debug` | Dump all decoded attributes per resource |
 | `--no-cache` | Disable the persistent `az`-lookup cache |
+| `--verify-exists` | Before emitting a resolved import block, probe Azure to confirm the resource exists. Resources that don't exist yet go to `FILE.pending` instead of getting a spurious import block. See [Verifying existence](#verifying-existence---verify-exists). |
 
 ### Resolve cache
 
@@ -51,6 +52,20 @@ There are three modes for how Azure CLI (`az`) lookups are handled. Everything e
 
 Use `--auto-resolve` for a fully autonomous run, and `--dry-run` to preview what resolves deterministically without touching Azure.
 
+### Verifying existence (`--verify-exists`)
+
+An `import {}` block only makes sense for a resource that **already exists** in Azure — importing a resource the plan is about to *create* makes `terraform apply` fail (`Cannot import … resource does not exist`). This is only a risk in a **mixed** plan (some resources already exist, some are genuinely new).
+
+With `--verify-exists`, the tool probes Azure for each fully-resolved ID before emitting it:
+
+- **Exists** → the import block is written as usual.
+- **Does not exist** → routed to **`FILE.pending`** (see [Writing to files](#writing-to-files-and-converging)) with a note; no import block is emitted.
+- **Could not determine** (auth/transient `az` error) → emitted anyway, with a warning, so a probe failure never silently drops an import.
+
+Most IDs are probed with `az resource show --ids`; non-ARM IDs (Key Vault data-plane URLs, azuread objects) use a type-specific probe. `azurerm_role_assignment` is already self-verifying (its resolver only returns an ID when the assignment exists), so it is not probed again.
+
+The flag is independent of `--auto-resolve`; combine them for an autonomous run that also skips not-yet-existing resources. Positive existence results are cached; negatives are **not**, so a resource created by a later `apply` is re-probed and picked up on the next run.
+
 ## Writing to files (and converging)
 
 `--out FILE` writes the generated import blocks to a file instead of stdout:
@@ -63,6 +78,7 @@ Output is split across two files:
 
 - **`FILE`** (e.g. `imports.tf`) — only **fully resolved** import blocks. This file is directly usable by Terraform.
 - **`FILE.unresolved`** (e.g. `imports.tf.unresolved`) — resources whose ID still contains a `<placeholder>`, plus types that can't be imported. Each block is preceded by a comment explaining *why* it couldn't be resolved. The `.unresolved` suffix means Terraform does **not** read this file (it only picks up `*.tf`), so a partial run never breaks `terraform plan`.
+- **`FILE.pending`** (e.g. `imports.tf.pending`) — only with `--verify-exists`: resources whose ID resolved fully but that **do not exist in Azure yet**. These need no import (apply will create them); the file is informational. Like `.unresolved`, Terraform ignores it, and it is rewritten each run — so once a resource exists it moves into `FILE` on the next run.
 
 To finish an unresolved import: fill in the `<placeholder>` and move the block into `imports.tf`.
 
