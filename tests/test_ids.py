@@ -67,7 +67,7 @@ def test_app_service_managed_certificate(change):
     id_, derived = build_id(rc, SUB)
     assert derived
     assert id_ == (f"/subscriptions/{SUB}/resourceGroups/rg/providers"
-                   "/Microsoft.Web/certificates/admin.example.com")
+                   "/Microsoft.Web/certificates/admin.example.com-app1")
 
 
 def test_virtual_machine_extension_known_vm_id(change):

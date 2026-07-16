@@ -56,13 +56,16 @@ def _arm(sub: str, rg: str, *segments: str) -> str:
 
 def managed_cert_id_from_binding(hostname_binding_id: str) -> str:
     """Derive an App Service Managed Certificate's ARM id from the hostname
-    binding it's created for — the certificate's name is the bound hostname,
-    in the same subscription/resource group as the binding's site."""
+    binding it's created for. Azure names the certificate resource
+    `{hostname}-{site}` (not just the hostname) to avoid collisions when the
+    same hostname is bound to more than one site."""
     prefix, sep, rest = hostname_binding_id.partition("/providers/Microsoft.Web/sites/")
     if not sep:
         return hostname_binding_id
-    hostname = rest.rsplit("/hostNameBindings/", 1)[-1]
-    return f"{prefix}/providers/Microsoft.Web/certificates/{hostname}"
+    site, sep2, hostname = rest.partition("/hostNameBindings/")
+    if not sep2:
+        return hostname_binding_id
+    return f"{prefix}/providers/Microsoft.Web/certificates/{hostname}-{site}"
 
 
 # fmt: off

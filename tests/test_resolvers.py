@@ -170,7 +170,7 @@ def test_app_service_certificate_binding_cross_plan(change):
     assert id_ == (
         f"{hostname_binding_id}|"
         f"/subscriptions/{SUB}/resourceGroups/rg/providers"
-        "/Microsoft.Web/certificates/admin.example.com"
+        "/Microsoft.Web/certificates/admin.example.com-app1"
     )
 
 
