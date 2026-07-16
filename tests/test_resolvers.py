@@ -153,6 +153,38 @@ def test_vm_extension_no_sibling(change):
     assert missing  # explains why
 
 
+def test_app_service_certificate_binding_cross_plan(change):
+    hostname_binding_id = (
+        f"/subscriptions/{SUB}/resourceGroups/rg/providers/Microsoft.Web"
+        "/sites/app1/hostNameBindings/admin.example.com"
+    )
+    cert = change("module.m.azurerm_app_service_managed_certificate.portal",
+                  custom_hostname_binding_id=hostname_binding_id)
+    binding = change("module.m.azurerm_app_service_certificate_binding.portal",
+                     hostname_binding_id=hostname_binding_id,
+                     certificate_id=UNKNOWN, ssl_state="SniEnabled")
+    id_, missing = resolve_cross_plan("azurerm_app_service_certificate_binding",
+                                      binding.after_attrs, binding.address,
+                                      [cert, binding], "")
+    assert missing == []
+    assert id_ == (
+        f"{hostname_binding_id}|"
+        f"/subscriptions/{SUB}/resourceGroups/rg/providers"
+        "/Microsoft.Web/certificates/admin.example.com"
+    )
+
+
+def test_app_service_certificate_binding_no_sibling(change):
+    binding = change("module.m.azurerm_app_service_certificate_binding.portal",
+                     hostname_binding_id="/subscriptions/x/.../hostNameBindings/h",
+                     certificate_id=UNKNOWN, ssl_state="SniEnabled")
+    id_, missing = resolve_cross_plan("azurerm_app_service_certificate_binding",
+                                      binding.after_attrs, binding.address,
+                                      [binding], "")
+    assert id_ is None
+    assert missing  # explains why
+
+
 def test_no_cross_plan_resolver_registered(change):
     rc = change("azurerm_resource_group.rg", name="rg")
     id_, missing = resolve_cross_plan("azurerm_resource_group", rc.after_attrs, rc.address, [rc], "")

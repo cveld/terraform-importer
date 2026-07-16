@@ -751,8 +751,45 @@ def _resolver_vm_extension(
     return (desc, execute), []
 
 
+def _resolver_app_service_certificate_binding(
+    attrs: dict, address: str, changes: list, plan_file: str,
+) -> ResolverResult:
+    """Resolve certificate_id when it references a sibling
+    azurerm_app_service_managed_certificate in the same plan."""
+    _, missing = _require(attrs, "certificate_id")
+    if not missing:
+        return None, []  # known id — let the formula handle it
+
+    hostname_binding_id = attrs.get("hostname_binding_id")
+    if not hostname_binding_id or hostname_binding_id is UNKNOWN:
+        return None, ["hostname_binding_id (not in plan)"]
+
+    own_rtype = _rtype_from_addr(address)
+    sibling, errors = _find_referenced_resource(
+        changes, address, plan_file, own_rtype, "certificate_id",
+        "azurerm_app_service_managed_certificate",
+    )
+    if sibling is None:
+        return None, [f"certificate_id (computed — {'; '.join(errors)})"]
+
+    from .ids import build_id
+    sub_id = _resolve_sub_id(changes, sibling.address, plan_file,
+                              "azurerm_app_service_managed_certificate")
+    cert_id, ok = build_id(sibling, sub_id)
+    if not ok or not cert_id or "<" in cert_id:
+        return None, ["certificate_id (computed — managed certificate id could not be derived)"]
+
+    import_id = f"{hostname_binding_id}|{cert_id}"
+
+    desc = f"cross-plan: managed certificate {sibling.address!r}"
+    def execute() -> tuple[str, str]:
+        return import_id, ""
+    return (desc, execute), []
+
+
 _CROSS_PLAN_RESOLVERS: dict[str, Callable[[dict, str, list, str], ResolverResult]] = {
     "azurerm_storage_container":                          _resolver_storage_container,
+    "azurerm_app_service_certificate_binding":            _resolver_app_service_certificate_binding,
     "azurerm_virtual_machine_extension":                 _resolver_vm_extension,
     "azurerm_virtual_network_dns_servers":               _resolver_azurerm_virtual_network_dns_servers,
     "azurerm_subnet_route_table_association":             _resolver_subnet_association,

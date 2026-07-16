@@ -56,6 +56,20 @@ def test_resource_provider_registration(change):
     assert id_ == f"/subscriptions/{SUB}/providers/Microsoft.App"
 
 
+def test_app_service_managed_certificate(change):
+    rc = change(
+        "azurerm_app_service_managed_certificate.portal",
+        custom_hostname_binding_id=(
+            f"/subscriptions/{SUB}/resourceGroups/rg/providers/Microsoft.Web"
+            "/sites/app1/hostNameBindings/admin.example.com"
+        ),
+    )
+    id_, derived = build_id(rc, SUB)
+    assert derived
+    assert id_ == (f"/subscriptions/{SUB}/resourceGroups/rg/providers"
+                   "/Microsoft.Web/certificates/admin.example.com")
+
+
 def test_virtual_machine_extension_known_vm_id(change):
     vm_id = (f"/subscriptions/{SUB}/resourceGroups/rg/providers"
              "/Microsoft.Compute/virtualMachines/myvm")

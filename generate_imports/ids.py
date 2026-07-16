@@ -54,6 +54,17 @@ def _arm(sub: str, rg: str, *segments: str) -> str:
     return "/subscriptions/" + sub + "/resourceGroups/" + rg + "/providers/" + "/".join(segments)
 
 
+def managed_cert_id_from_binding(hostname_binding_id: str) -> str:
+    """Derive an App Service Managed Certificate's ARM id from the hostname
+    binding it's created for — the certificate's name is the bound hostname,
+    in the same subscription/resource group as the binding's site."""
+    prefix, sep, rest = hostname_binding_id.partition("/providers/Microsoft.Web/sites/")
+    if not sep:
+        return hostname_binding_id
+    hostname = rest.rsplit("/hostNameBindings/", 1)[-1]
+    return f"{prefix}/providers/Microsoft.Web/certificates/{hostname}"
+
+
 # fmt: off
 _ID_FORMULAS: dict[str, Any] = {
     # Core
@@ -104,6 +115,8 @@ _ID_FORMULAS: dict[str, Any] = {
         lambda a, s: _arm(s, _str(a,"resource_group_name"), "Microsoft.Web/sites", _str(a,"name")),
     "azurerm_app_service_plan":
         lambda a, s: _arm(s, _str(a,"resource_group_name"), "Microsoft.Web/serverFarms", _str(a,"name")),
+    "azurerm_app_service_managed_certificate":
+        lambda a, _: managed_cert_id_from_binding(_str(a,"custom_hostname_binding_id")),
 
     # EventGrid
     "azurerm_eventgrid_domain":
