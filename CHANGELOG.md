@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.5.0](https://github.com/cveld/terraform-importer/compare/v0.4.0...v0.5.0) (2026-09-02)
+
+
+### Features
+
+* support azurerm_app_service_managed_certificate and certificate_binding ([a633cff](https://github.com/cveld/terraform-importer/commit/a633cff0b7fb0cc2960ab3dabb9fe419cf9fdf1c))
+* support terraform_data, resource_provider_registration, VM extension ([#10](https://github.com/cveld/terraform-importer/issues/10)) ([f3ae8bb](https://github.com/cveld/terraform-importer/commit/f3ae8bbab100fdedf26f6807789c292749febdd8))
+* trace principal_id to sibling UAMI, add --verify-exists gate for pending imports ([73d603b](https://github.com/cveld/terraform-importer/commit/73d603b95cebd44cd80874a31b7dbb0ccb6946e8))
+
+
+### Bug Fixes
+
+* App Service Managed Certificate name includes the site, not just the hostname ([5f14e74](https://github.com/cveld/terraform-importer/commit/5f14e7477327bfb3b2fde22a4df0f63860a6656f))
+
 ## [0.4.0](https://github.com/cveld/terraform-importer/compare/v0.3.1...v0.4.0) (2026-06-19)
 
 
